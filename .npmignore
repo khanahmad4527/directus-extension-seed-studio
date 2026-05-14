@@ -1,0 +1,17 @@
+src
+test
+seed
+docs
+node_modules
+tsconfig.json
+docker-compose.yml
+data
+.gitignore
+.npmignore
+.npmrc
+.env
+.env.*
+*.log
+.DS_Store
+coverage
+pnpm-lock.yaml
