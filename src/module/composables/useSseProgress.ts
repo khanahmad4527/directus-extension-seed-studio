@@ -1,58 +1,61 @@
 import { onBeforeUnmount, ref } from 'vue';
 import type { ProgressEvent } from '../types';
+import { useSeedApi } from './useSeedApi';
 
+/**
+ * Progress for the current run, whichever engine produced it.
+ *
+ * With the API extension the events arrive over SSE; in app-only mode they come
+ * straight from the in-tab engine. The component does not need to know which.
+ */
 export function useSseProgress() {
+  const api = useSeedApi();
+
   const events = ref<ProgressEvent[]>([]);
   const latest = ref<ProgressEvent | null>(null);
   const done = ref(false);
+  const cancelled = ref(false);
   const error = ref<string | null>(null);
 
-  let source: EventSource | null = null;
+  let unsubscribe: (() => void) | null = null;
 
-  function start(url: string) {
+  async function start(runId: string) {
     stop();
     events.value = [];
     latest.value = null;
     done.value = false;
+    cancelled.value = false;
     error.value = null;
 
-    source = new EventSource(url, { withCredentials: true });
+    unsubscribe = await api.progress(runId, (event) => {
+      events.value = [...events.value, event];
+      latest.value = event;
 
-    source.onmessage = (msg) => {
-      try {
-        const evt = JSON.parse(msg.data) as ProgressEvent;
-        events.value.push(evt);
-        latest.value = evt;
-        if (evt.type === 'complete') {
-          done.value = true;
-          stop();
-        }
-        if (evt.type === 'error') {
-          error.value = evt.message ?? 'Generation failed';
-          done.value = true;
-          stop();
-        }
-      } catch (err) {
-        error.value = 'Failed to parse progress event';
+      if (event.type === 'complete') {
+        done.value = true;
+        stop();
       }
-    };
-
-    source.onerror = () => {
-      if (!done.value) {
-        error.value = 'Lost connection to progress stream';
+      if (event.type === 'cancelled') {
+        cancelled.value = true;
+        done.value = true;
+        stop();
       }
-      stop();
-    };
+      if (event.type === 'error') {
+        error.value = event.message ?? 'Generation failed';
+        done.value = true;
+        stop();
+      }
+    });
   }
 
   function stop() {
-    if (source) {
-      source.close();
-      source = null;
+    if (unsubscribe) {
+      unsubscribe();
+      unsubscribe = null;
     }
   }
 
   onBeforeUnmount(stop);
 
-  return { events, latest, done, error, start, stop };
+  return { events, latest, done, cancelled, error, start, stop };
 }

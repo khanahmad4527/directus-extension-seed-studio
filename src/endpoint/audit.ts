@@ -1,4 +1,4 @@
-import type { AuditRunRow, PresetRow, StrategyMap } from '../types.js';
+import type { AuditRunRow, PresetRow } from '../core/types.js';
 
 const RUNS_COLLECTION = 'seed_studio_runs';
 const PRESETS_COLLECTION = 'seed_studio_presets';
@@ -11,6 +11,14 @@ interface CollectionSpec {
   fields: any[];
   relations: any[];
 }
+
+const STATUS_CHOICES = [
+  { text: 'Running', value: 'running' },
+  { text: 'Success', value: 'success' },
+  { text: 'Failed', value: 'failed' },
+  { text: 'Cancelled', value: 'cancelled' },
+  { text: 'Undone', value: 'undone' },
+];
 
 function runsSpec(): CollectionSpec {
   return {
@@ -45,18 +53,14 @@ function runsSpec(): CollectionSpec {
         meta: {
           interface: 'select-dropdown',
           display: 'labels',
-          options: {
-            choices: [
-              { text: 'Running', value: 'running' },
-              { text: 'Success', value: 'success' },
-              { text: 'Failed', value: 'failed' },
-            ],
-          },
+          options: { choices: STATUS_CHOICES },
           display_options: {
             choices: [
               { text: 'Running', value: 'running', foreground: '#FFFFFF', background: '#FFA439' },
               { text: 'Success', value: 'success', foreground: '#FFFFFF', background: '#2ECDA7' },
               { text: 'Failed', value: 'failed', foreground: '#FFFFFF', background: '#E35169' },
+              { text: 'Cancelled', value: 'cancelled', foreground: '#FFFFFF', background: '#A2B5CD' },
+              { text: 'Undone', value: 'undone', foreground: '#FFFFFF', background: '#6644FF' },
             ],
             showAsDot: false,
           },
@@ -164,6 +168,42 @@ function runsSpec(): CollectionSpec {
         },
       },
       {
+        field: 'seed',
+        type: 'bigInteger',
+        meta: {
+          interface: 'input',
+          readonly: true,
+          width: 'half',
+          note: 'Re-run with this seed to reproduce the exact same rows',
+          sort: 11,
+        },
+      },
+      {
+        field: 'undoable',
+        type: 'boolean',
+        meta: {
+          interface: 'boolean',
+          display: 'boolean',
+          readonly: true,
+          width: 'half',
+          note: 'Whether every created row was recorded and can still be removed',
+          sort: 12,
+        },
+        schema: { default_value: false },
+      },
+      {
+        field: 'options',
+        type: 'json',
+        meta: {
+          interface: 'input-code',
+          options: { language: 'json', lineNumber: true },
+          readonly: true,
+          width: 'full',
+          note: 'Run options (seed, locale, coherence, write mode)',
+          sort: 13,
+        },
+      },
+      {
         field: 'strategies',
         type: 'json',
         meta: {
@@ -172,7 +212,20 @@ function runsSpec(): CollectionSpec {
           readonly: true,
           width: 'full',
           note: 'Snapshot of strategies used for this run',
-          sort: 11,
+          sort: 14,
+        },
+      },
+      {
+        field: 'created_ids',
+        type: 'json',
+        meta: {
+          interface: 'input-code',
+          options: { language: 'json' },
+          readonly: true,
+          hidden: true,
+          width: 'full',
+          note: 'Primary keys written by this run — used by Undo',
+          sort: 15,
         },
       },
       {
@@ -191,7 +244,7 @@ function runsSpec(): CollectionSpec {
               hidden: true,
             },
           ],
-          sort: 12,
+          sort: 16,
         },
       },
       {
@@ -204,7 +257,7 @@ function runsSpec(): CollectionSpec {
           special: ['user-created'],
           readonly: true,
           width: 'half',
-          sort: 13,
+          sort: 17,
         },
       },
     ],
@@ -281,6 +334,17 @@ function presetsSpec(): CollectionSpec {
         },
       },
       {
+        field: 'options',
+        type: 'json',
+        meta: {
+          interface: 'input-code',
+          options: { language: 'json', lineNumber: true },
+          width: 'full',
+          note: 'Run options saved with this preset',
+          sort: 5,
+        },
+      },
+      {
         field: 'date_created',
         type: 'timestamp',
         meta: {
@@ -290,7 +354,7 @@ function presetsSpec(): CollectionSpec {
           special: ['date-created'],
           readonly: true,
           width: 'half',
-          sort: 5,
+          sort: 6,
         },
       },
       {
@@ -303,7 +367,7 @@ function presetsSpec(): CollectionSpec {
           special: ['user-created'],
           readonly: true,
           width: 'half',
-          sort: 6,
+          sort: 7,
         },
       },
     ],
@@ -325,7 +389,7 @@ export async function ensureAuditCollections(
   logger?: Logger,
   getSchema?: () => Promise<any>
 ): Promise<void> {
-  const { CollectionsService, RelationsService } = services;
+  const { CollectionsService, RelationsService, FieldsService } = services;
   if (!CollectionsService) return;
 
   const collectionsService = new CollectionsService({ schema, accountability: { admin: true } });
@@ -340,6 +404,12 @@ export async function ensureAuditCollections(
         accountability: { admin: true },
       });
       await ensureRelations(relationsService, spec.relations, logger);
+    }
+    if (!created && FieldsService) {
+      // Upgrade path: an install from an earlier version is missing the newer
+      // columns (seed, options, created_ids, undoable).
+      const freshSchema = getSchema ? await getSchema() : schema;
+      await ensureFields(new FieldsService({ schema: freshSchema, accountability: { admin: true } }), spec, logger);
     }
   }
 }
@@ -375,6 +445,29 @@ async function ensureCollection(
   }
 }
 
+async function ensureFields(fieldsService: any, spec: CollectionSpec, logger?: Logger): Promise<void> {
+  let existing: string[] = [];
+  try {
+    const rows = (await fieldsService.readAll(spec.name)) as any[];
+    existing = rows.map((row) => row.field);
+  } catch {
+    return;
+  }
+
+  for (const field of spec.fields) {
+    if (existing.includes(field.field)) continue;
+    try {
+      await fieldsService.createField(spec.name, field);
+      logger?.warn?.({ collection: spec.name, field: field.field }, 'Seed Studio: added missing audit column');
+    } catch (err: any) {
+      logger?.warn?.(
+        { collection: spec.name, field: field.field, err: err?.message },
+        'Seed Studio: could not add audit column'
+      );
+    }
+  }
+}
+
 async function ensureRelations(
   relationsService: any,
   relations: any[],
@@ -397,7 +490,7 @@ export async function writeAuditStart(
 ): Promise<string> {
   const { ItemsService } = services;
   const svc = new ItemsService(RUNS_COLLECTION, { schema, accountability });
-  const id = (row.id ?? crypto.randomUUID()) as string;
+  const id = (row.id ?? globalThis.crypto.randomUUID()) as string;
   await svc.createOne({ ...row, id });
   return id;
 }
@@ -414,6 +507,21 @@ export async function updateAuditEnd(
   await svc.updateOne(id, patch as any);
 }
 
+export async function readRun(
+  services: any,
+  schema: any,
+  accountability: any,
+  id: string
+): Promise<AuditRunRow | null> {
+  const { ItemsService } = services;
+  const svc = new ItemsService(RUNS_COLLECTION, { schema, accountability });
+  try {
+    return (await svc.readOne(id)) as AuditRunRow;
+  } catch {
+    return null;
+  }
+}
+
 export async function listRuns(
   services: any,
   schema: any,
@@ -423,7 +531,30 @@ export async function listRuns(
 ): Promise<unknown[]> {
   const { ItemsService } = services;
   const svc = new ItemsService(RUNS_COLLECTION, { schema, accountability });
-  return svc.readByQuery({ sort: ['-started_at'], limit, offset });
+  return svc.readByQuery({
+    // created_ids can hold 100k keys — never ship it to the list view.
+    fields: [
+      'id',
+      'status',
+      'collection',
+      'row_count_requested',
+      'row_count_written',
+      'dry_run',
+      'wipe_first',
+      'duration_ms',
+      'started_at',
+      'completed_at',
+      'seed',
+      'undoable',
+      'options',
+      'strategies',
+      'error_message',
+      'user_created',
+    ],
+    sort: ['-started_at'],
+    limit,
+    offset,
+  });
 }
 
 export async function listPresets(
@@ -445,7 +576,7 @@ export async function createPreset(
 ): Promise<string> {
   const { ItemsService } = services;
   const svc = new ItemsService(PRESETS_COLLECTION, { schema, accountability });
-  const id = (await svc.createOne({ ...row, id: row.id ?? crypto.randomUUID() })) as string;
+  const id = (await svc.createOne({ ...row, id: row.id ?? globalThis.crypto.randomUUID() })) as string;
   return id;
 }
 
@@ -461,5 +592,3 @@ export async function deletePreset(
 }
 
 export const AUDIT_COLLECTIONS = { RUNS_COLLECTION, PRESETS_COLLECTION } as const;
-
-export type _Unused = StrategyMap;

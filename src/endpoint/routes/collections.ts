@@ -1,47 +1,36 @@
-import type { Router } from 'express';
+import type { ResponseLike, Router } from '../express-types.js';
+import { resolveDisplayName } from '../../core/schema-model.js';
+import { buildEngine, type RouteDeps } from '../engine-context.js';
 
-export function registerCollectionsRoute(
-  router: Router,
-  deps: { services: any; getSchema: () => Promise<any> }
-): void {
-  router.get('/collections', async (req: any, res) => {
-    if (!req.accountability?.admin) {
-      return res.status(403).json({ error: 'Admin only' });
-    }
+const SEED_STUDIO_PREFIX = 'seed_studio_';
+
+export function registerCollectionsRoute(router: Router, deps: RouteDeps): void {
+  router.get('/collections', async (req: any, res: ResponseLike) => {
     try {
-      const schema = await deps.getSchema();
-      const { ItemsService } = deps.services;
+      const engine = await buildEngine(req, deps);
       const showSystem = req.query.showSystem === 'true' || req.query.showSystem === '1';
+      const collections = await engine.ds.listCollections();
 
-      const collections = Object.values<any>(schema.collections ?? {});
-      const out: Array<{ collection: string; displayName: string; fieldCount: number; rowCount: number; isSystem: boolean }> = [];
+      const visible = collections.filter((collection) => {
+        const name = collection.collection;
+        if (name.startsWith(SEED_STUDIO_PREFIX)) return true;
+        return name.startsWith('directus_') ? showSystem : true;
+      });
 
-      for (const c of collections) {
-        const name: string = c.collection;
-        const isSystem = name.startsWith('directus_');
-        if (isSystem && !showSystem) continue;
-
-        const fieldCount = Object.keys(c.fields ?? schema.fields?.[name] ?? {}).length;
-        let rowCount = 0;
-        try {
-          const svc = new ItemsService(name, { schema, accountability: req.accountability });
-          const agg = await svc.readByQuery({ aggregate: { count: '*' } });
-          const first = Array.isArray(agg) ? agg[0] : agg;
-          const v = first?.count;
-          rowCount = typeof v === 'string' ? parseInt(v, 10) : Number(v ?? 0);
-          if (Number.isNaN(rowCount)) rowCount = 0;
-        } catch {
-          rowCount = 0;
-        }
-
-        out.push({
-          collection: name,
-          displayName: c.meta?.name ?? name,
-          fieldCount,
-          rowCount,
-          isSystem,
-        });
-      }
+      const out = await Promise.all(
+        visible.map(async (collection) => {
+          const name = collection.collection;
+          const overview = engine.schema.collections?.[name];
+          return {
+            collection: name,
+            displayName: resolveDisplayName(name, collection),
+            fieldCount: Object.keys(overview?.fields ?? collection.fields ?? {}).length,
+            rowCount: await engine.ds.count(name),
+            isSystem: name.startsWith('directus_'),
+            singleton: Boolean(collection.singleton),
+          };
+        })
+      );
 
       out.sort((a, b) => a.collection.localeCompare(b.collection));
       return res.json({ collections: out });

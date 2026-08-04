@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { lookupSystemFieldRule } from '../src/endpoint/core/system-field-rules.js';
+import { lookupSystemFieldRule } from '../src/core/system-field-rules.js';
 
 describe('lookupSystemFieldRule', () => {
   it('returns null for non-system collections', () => {

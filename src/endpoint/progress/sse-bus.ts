@@ -1,4 +1,4 @@
-import type { ProgressEvent } from '../types.js';
+import type { ProgressEvent } from '../../core/types.js';
 
 type Listener = (event: ProgressEvent) => void;
 

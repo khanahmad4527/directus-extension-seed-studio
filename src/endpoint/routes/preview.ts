@@ -1,16 +1,15 @@
-import type { Router } from 'express';
-import { runPreview } from '../core/generator.js';
-import { sseBus } from '../progress/sse-bus.js';
+import type { ResponseLike, Router } from '../express-types.js';
+import { runPreview } from '../../core/generator.js';
+import { buildEngine, sanitiseOptions, type RouteDeps } from '../engine-context.js';
 import { wrapLogger } from '../logger.js';
 
-export function registerPreviewRoute(
-  router: Router,
-  deps: { services: any; getSchema: () => Promise<any>; logger: any }
-): void {
-  router.post('/preview', async (req: any, res) => {
-    if (!req.accountability?.admin) {
-      return res.status(403).json({ error: 'Admin only' });
-    }
+/**
+ * Preview doubles as a dry run: rows are built and then checked against the
+ * same rules Directus enforces, so the response says which rows would fail and
+ * what the invariant pass had to repair.
+ */
+export function registerPreviewRoute(router: Router, deps: RouteDeps): void {
+  router.post('/preview', async (req: any, res: ResponseLike) => {
     try {
       const body = req.body ?? {};
       if (!body.collection || typeof body.collection !== 'string') {
@@ -19,18 +18,26 @@ export function registerPreviewRoute(
       if (!body.strategies || typeof body.strategies !== 'object') {
         return res.status(400).json({ error: 'strategies is required' });
       }
-      const schema = await deps.getSchema();
+
+      const options = sanitiseOptions(body.options);
+      const engine = await buildEngine(req, deps, options);
+
       const result = await runPreview(
-        { collection: body.collection, strategies: body.strategies, count: body.count ?? 10 },
         {
-          services: deps.services,
-          schema,
-          accountability: req.accountability,
-          progressBus: sseBus,
-          logger: wrapLogger(deps.logger),
-        }
+          collection: body.collection,
+          strategies: body.strategies,
+          count: body.count ?? 10,
+          options,
+        },
+        { ds: engine.ds, rng: engine.rng, logger: wrapLogger(deps.logger) }
       );
-      return res.json(result);
+
+      return res.json({
+        rows: result.rows,
+        issues: result.issues,
+        changes: result.changes,
+        seed: result.seed,
+      });
     } catch (err: any) {
       return res.status(400).json({ error: err?.message ?? 'Preview failed' });
     }

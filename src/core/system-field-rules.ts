@@ -1,4 +1,4 @@
-import type { GenerationStrategy } from '../types.js';
+import type { GenerationStrategy } from './types.js';
 
 /**
  * Per-field strategies for Directus system collections.

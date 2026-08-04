@@ -1,93 +1,62 @@
-export type GenerationStrategy =
-  | { kind: 'system' }
-  | { kind: 'skip' }
-  | { kind: 'null' }
-  | { kind: 'fixed'; value: unknown }
-  | { kind: 'faker'; method: string; args?: unknown[] }
-  | { kind: 'random_choice'; choices: unknown[] }
-  | { kind: 'random_int'; min: number; max: number }
-  | { kind: 'random_float'; min: number; max: number; fractionDigits: number }
-  | { kind: 'random_date'; daysBack: number; daysForward: number }
-  | { kind: 'random_boolean'; trueProbability: number }
-  | { kind: 'uuid' }
-  | { kind: 'sequence'; pattern: string; startFrom?: number }
-  | { kind: 'm2o_random'; relatedCollection: string }
-  | { kind: 'file_reuse'; mimeFilter?: string }
-  | { kind: 'lorem_paragraphs'; count: number }
-  | { kind: 'random_user_collection' }
-  | { kind: 'random_item_of_field'; collectionField: string };
+/**
+ * The admin app and the API extension share one type surface: `src/core/types`.
+ *
+ * These are type-only re-exports, so nothing from the engine is pulled into the
+ * app bundle unless a component actually imports engine code.
+ */
+export type {
+  AuditRunRow,
+  Bbox,
+  CoherentTrait,
+  CollectionDescriptor,
+  CollectionInsights,
+  EngineCapabilities,
+  FakerMethodEntry,
+  FieldConstraints,
+  FieldCondition,
+  FieldDescriptor,
+  FlowInfo,
+  GenerationRequest,
+  GenerationStrategy,
+  PresetRow,
+  PreviewRequest,
+  PreviewResult,
+  PrimaryKey,
+  ProgressEvent,
+  RelationDescriptor,
+  RowIssue,
+  RunOptions,
+  StrategyKind,
+  StrategyMap,
+  WeightedChoice,
+} from '../core/types.js';
 
-export interface RelationDescriptor {
-  type: 'm2o' | 'o2m' | 'm2m' | 'm2a' | 'self';
-  relatedCollection: string | null;
-  relatedCollections?: string[];
-  junction?: string;
-}
+export type { FieldProfile, ProfileResult } from '../core/inference.js';
+export type { InvariantChange } from '../core/invariants.js';
+export type { ProjectPlan } from '../core/project.js';
 
-export interface FieldDescriptor {
-  field: string;
-  type: string;
-  interface: string | null;
-  required: boolean;
-  nullable: boolean;
-  readonly: boolean;
-  isPrimaryKey: boolean;
-  isSystemField: boolean;
-  relation: RelationDescriptor | null;
-  options: any;
-  special: string[];
-  validation: any;
-  defaultValue: unknown;
-  suggestedStrategy: GenerationStrategy;
-  maxLength?: number | null;
-  isUnique?: boolean;
-}
-
-export interface CollectionDescriptor {
+export interface CollectionSummary {
   collection: string;
   displayName: string;
-  primaryKeyField: string;
+  fieldCount: number;
   rowCount: number;
-  fields: FieldDescriptor[];
+  isSystem: boolean;
+  singleton?: boolean;
 }
 
-export type StrategyMap = Record<string, GenerationStrategy>;
-
-export interface GenerationRequest {
-  collection: string;
-  strategies: StrategyMap;
-  count: number;
-  batchSize?: number;
-  wipeFirst?: boolean;
-  savePreset?: boolean;
-  presetName?: string;
+/** Which engine the UI is currently driving. */
+export interface EngineStatus {
+  engine: 'api' | 'app';
+  capabilities: import('../core/types.js').EngineCapabilities;
+  locales: string[];
+  /** Set when the API extension is unavailable and we fell back to the browser. */
+  fallbackReason?: string;
+  environment?: { publicUrl: string | null; isProduction: boolean };
 }
 
-export interface PreviewRequest {
-  collection: string;
-  strategies: StrategyMap;
-  count?: number;
-}
-
-export interface ProgressEvent {
-  runId: string;
-  type: 'start' | 'batch' | 'complete' | 'error';
-  rowsWritten?: number;
-  totalRows?: number;
-  currentBatch?: number;
-  totalBatches?: number;
-  elapsedMs?: number;
-  message?: string;
-}
-
-export interface PresetRow {
-  id?: string;
-  name: string;
-  collection: string;
-  strategies: StrategyMap;
-}
-
-export interface FakerMethodEntry {
-  label: string;
-  path: string;
+export interface PreviewResponse {
+  rows: Record<string, unknown>[];
+  issues: import('../core/types.js').RowIssue[];
+  changes: import('../core/invariants.js').InvariantChange[];
+  seed: number;
 }

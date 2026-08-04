@@ -1,14 +1,9 @@
-import type { Router } from 'express';
-import { createPreset, deletePreset, listPresets } from '../core/audit.js';
+import type { ResponseLike, Router } from '../express-types.js';
+import { createPreset, deletePreset, listPresets } from '../audit.js';
+import { sanitiseOptions, type RouteDeps } from '../engine-context.js';
 
-export function registerPresetRoutes(
-  router: Router,
-  deps: { services: any; getSchema: () => Promise<any> }
-): void {
-  router.get('/presets/:collection', async (req: any, res) => {
-    if (!req.accountability?.admin) {
-      return res.status(403).json({ error: 'Admin only' });
-    }
+export function registerPresetRoutes(router: Router, deps: RouteDeps): void {
+  router.get('/presets/:collection', async (req: any, res: ResponseLike) => {
     try {
       const schema = await deps.getSchema();
       const rows = await listPresets(deps.services, schema, req.accountability, req.params.collection);
@@ -18,12 +13,9 @@ export function registerPresetRoutes(
     }
   });
 
-  router.post('/presets', async (req: any, res) => {
-    if (!req.accountability?.admin) {
-      return res.status(403).json({ error: 'Admin only' });
-    }
+  router.post('/presets', async (req: any, res: ResponseLike) => {
     try {
-      const { name, collection, strategies } = req.body ?? {};
+      const { name, collection, strategies, options } = req.body ?? {};
       if (!name || !collection || !strategies) {
         return res.status(400).json({ error: 'name, collection, and strategies are required' });
       }
@@ -32,6 +24,7 @@ export function registerPresetRoutes(
         name,
         collection,
         strategies,
+        options: options ? sanitiseOptions(options) : null,
       });
       return res.json({ id });
     } catch (err: any) {
@@ -39,10 +32,7 @@ export function registerPresetRoutes(
     }
   });
 
-  router.delete('/presets/:id', async (req: any, res) => {
-    if (!req.accountability?.admin) {
-      return res.status(403).json({ error: 'Admin only' });
-    }
+  router.delete('/presets/:id', async (req: any, res: ResponseLike) => {
     try {
       const schema = await deps.getSchema();
       await deletePreset(deps.services, schema, req.accountability, req.params.id);

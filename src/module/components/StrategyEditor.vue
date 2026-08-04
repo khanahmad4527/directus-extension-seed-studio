@@ -101,6 +101,89 @@
       <p class="form-hint">Reads the value of this row's other field (e.g. <code>collection</code>) and picks a random PK from that user collection.</p>
     </div>
 
+    <div v-if="local.kind === 'template'" class="form-row">
+      <label>Template</label>
+      <v-input v-model="templateText" :placeholder="templatePlaceholder" />
+      <p v-pre class="form-hint">
+        Mix values from this row's entity, faker, and other fields:
+        <code>{{person.firstName}}</code>,
+        <code>{{row.title | slug}}</code>,
+        <code>{{pick(a,b,c)}}</code>,
+        <code>{{int(1,5)}}</code>,
+        <code>{{seq | pad:5}}</code>.
+      </p>
+    </div>
+
+    <div v-if="local.kind === 'coherent'" class="form-row">
+      <label>Entity trait</label>
+      <v-select :model-value="coherentTrait" :items="traitOptions" @update:model-value="(v) => (coherentTrait = v)" />
+      <p class="form-hint">
+        Drawn from the row's single imaginary person/company/product, so related fields agree with each other.
+      </p>
+    </div>
+
+    <div v-if="local.kind === 'weighted_choice'" class="form-row">
+      <label>Weighted choices</label>
+      <v-input v-model="weightedText" placeholder="published:60, draft:25, archived:8" />
+      <p class="form-hint">
+        <code>value:weight</code> pairs. Higher weight means the value appears more often.
+      </p>
+    </div>
+
+    <div v-if="local.kind === 'regex'" class="form-row">
+      <label>Pattern</label>
+      <v-input v-model="regexPattern" placeholder="^INV-[0-9]{5}$" />
+      <p class="form-hint">Generates values that match this regular expression.</p>
+    </div>
+
+    <template v-if="local.kind === 'geometry'">
+      <div class="form-row">
+        <label>Geometry type</label>
+        <v-select
+          :model-value="geometryType"
+          :items="geometryOptions"
+          @update:model-value="(v) => (geometryType = v)"
+        />
+      </div>
+      <div class="form-row">
+        <label>Bounding box (minLng, minLat, maxLng, maxLat)</label>
+        <v-input v-model="bboxText" placeholder="-122.6, 37.5, -122.2, 37.9" />
+        <p class="form-hint">Leave empty for a default box. Coordinates are generated inside it.</p>
+      </div>
+    </template>
+
+    <div v-if="local.kind === 'markdown' || local.kind === 'html'" class="form-row">
+      <label>Paragraphs</label>
+      <v-input type="number" v-model="richParagraphs" />
+      <p class="form-hint">
+        Produces headings, lists and paragraphs — not one undifferentiated block of lorem.
+      </p>
+    </div>
+
+    <template v-if="local.kind === 'm2m_random'">
+      <div class="form-row">
+        <label>Minimum links per row</label>
+        <v-input type="number" v-model="m2mMin" />
+      </div>
+      <div class="form-row">
+        <label>Maximum links per row</label>
+        <v-input type="number" v-model="m2mMax" />
+        <p class="form-hint">
+          Junction rows are written after the parent rows exist. Most rows get few links and a
+          handful get many, the way real tagging looks.
+        </p>
+      </div>
+    </template>
+
+    <div v-if="supportsNullRate" class="form-row">
+      <label>Leave empty (% of rows)</label>
+      <v-input type="number" v-model="nullRatePercent" :disabled="field.required" />
+      <p class="form-hint">
+        <template v-if="field.required">This field is required, so it must always have a value.</template>
+        <template v-else>Real tables are not 100% populated. 0 fills every row.</template>
+      </p>
+    </div>
+
     <div v-if="previewError" class="preview-error">{{ previewError }}</div>
     <div v-else-if="previewValues.length" class="preview-box">
       <strong>Sample values</strong>
@@ -159,6 +242,18 @@ const m2oCollection = ref('');
 const fileMime = ref('image/');
 const loremCount = ref('3');
 const itemOfField = ref('collection');
+const templateText = ref('');
+const coherentTrait = ref('content.title');
+const weightedText = ref('published:60, draft:25, archived:8');
+const regexPattern = ref('^[A-Z]{3}-[0-9]{5}$');
+const geometryType = ref('Point');
+const bboxText = ref('');
+const richParagraphs = ref('3');
+const m2mMin = ref('0');
+const m2mMax = ref('4');
+const nullRatePercent = ref('0');
+/** Kept out of the template: Vue's parser treats `{{ }}` in markup as an interpolation. */
+const templatePlaceholder = '{{person.firstName}} at {{company.name}}';
 
 const previewing = ref(false);
 const previewValues = ref<unknown[]>([]);
@@ -196,7 +291,75 @@ function hydrate() {
   if (s.kind === 'file_reuse') fileMime.value = s.mimeFilter ?? '';
   if (s.kind === 'lorem_paragraphs') loremCount.value = String(s.count);
   if (s.kind === 'random_item_of_field') itemOfField.value = s.collectionField;
+  if (s.kind === 'template') templateText.value = s.template;
+  if (s.kind === 'coherent') coherentTrait.value = s.trait;
+  if (s.kind === 'weighted_choice') {
+    weightedText.value = s.choices.map((c) => `${String(c.value)}:${c.weight}`).join(', ');
+  }
+  if (s.kind === 'regex') regexPattern.value = s.pattern;
+  if (s.kind === 'geometry') {
+    geometryType.value = s.geometryType ?? 'Point';
+    bboxText.value = s.bbox ? s.bbox.join(', ') : '';
+  }
+  if (s.kind === 'markdown' || s.kind === 'html') richParagraphs.value = String(s.paragraphs ?? 3);
+  if (s.kind === 'm2m_random') {
+    m2mMin.value = String(s.min);
+    m2mMax.value = String(s.max);
+  }
+  nullRatePercent.value = String(Math.round((s.nullRate ?? 0) * 100));
 }
+
+/** Kinds where "sometimes leave this empty" is meaningful. */
+const NO_NULL_RATE_KINDS = new Set(['system', 'skip', 'null', 'm2m_random']);
+const supportsNullRate = computed(() => !NO_NULL_RATE_KINDS.has(local.value.kind));
+
+const traitOptions = [
+  { text: 'Person · first name', value: 'person.firstName' },
+  { text: 'Person · last name', value: 'person.lastName' },
+  { text: 'Person · full name', value: 'person.fullName' },
+  { text: 'Person · job title', value: 'person.jobTitle' },
+  { text: 'Person · bio', value: 'person.bio' },
+  { text: 'Person · birthdate', value: 'person.birthdate' },
+  { text: 'Person · avatar URL', value: 'person.avatar' },
+  { text: 'Contact · email', value: 'contact.email' },
+  { text: 'Contact · work email', value: 'contact.workEmail' },
+  { text: 'Contact · username', value: 'contact.username' },
+  { text: 'Contact · phone', value: 'contact.phone' },
+  { text: 'Contact · website', value: 'contact.website' },
+  { text: 'Company · name', value: 'company.name' },
+  { text: 'Company · domain', value: 'company.domain' },
+  { text: 'Company · catchphrase', value: 'company.catchPhrase' },
+  { text: 'Location · street', value: 'location.street' },
+  { text: 'Location · city', value: 'location.city' },
+  { text: 'Location · state', value: 'location.state' },
+  { text: 'Location · country', value: 'location.country' },
+  { text: 'Location · zip', value: 'location.zip' },
+  { text: 'Location · latitude', value: 'location.latitude' },
+  { text: 'Location · longitude', value: 'location.longitude' },
+  { text: 'Content · title', value: 'content.title' },
+  { text: 'Content · slug', value: 'content.slug' },
+  { text: 'Content · excerpt', value: 'content.excerpt' },
+  { text: 'Content · body', value: 'content.body' },
+  { text: 'Content · body (HTML)', value: 'content.bodyHtml' },
+  { text: 'Content · tags', value: 'content.tags' },
+  { text: 'Commerce · product name', value: 'commerce.productName' },
+  { text: 'Commerce · SKU', value: 'commerce.sku' },
+  { text: 'Commerce · price', value: 'commerce.price' },
+  { text: 'Commerce · cost', value: 'commerce.cost' },
+  { text: 'Commerce · sale price', value: 'commerce.salePrice' },
+  { text: 'Commerce · currency', value: 'commerce.currency' },
+  { text: 'Time · created', value: 'time.created' },
+  { text: 'Time · updated', value: 'time.updated' },
+];
+
+const geometryOptions = [
+  { text: 'Point', value: 'Point' },
+  { text: 'MultiPoint', value: 'MultiPoint' },
+  { text: 'LineString', value: 'LineString' },
+  { text: 'MultiLineString', value: 'MultiLineString' },
+  { text: 'Polygon', value: 'Polygon' },
+  { text: 'MultiPolygon', value: 'MultiPolygon' },
+];
 
 const kindOptions = [
   { text: 'System (auto)', value: 'system' },
@@ -216,6 +379,14 @@ const kindOptions = [
   { text: 'Lorem paragraphs', value: 'lorem_paragraphs' },
   { text: 'Random user collection', value: 'random_user_collection' },
   { text: 'Item of another field', value: 'random_item_of_field' },
+  { text: 'Coherent (row entity)', value: 'coherent' },
+  { text: 'Template', value: 'template' },
+  { text: 'Weighted choice', value: 'weighted_choice' },
+  { text: 'Regex pattern', value: 'regex' },
+  { text: 'Geometry (GeoJSON)', value: 'geometry' },
+  { text: 'Markdown body', value: 'markdown' },
+  { text: 'HTML body', value: 'html' },
+  { text: 'Random links (M2M)', value: 'm2m_random' },
 ];
 
 const fakerOptions = computed(() =>
@@ -263,6 +434,29 @@ function defaultsForKind(kind: GenerationStrategy['kind']): GenerationStrategy {
       return { kind: 'random_user_collection' };
     case 'random_item_of_field':
       return { kind: 'random_item_of_field', collectionField: 'collection' };
+    case 'coherent':
+      return { kind: 'coherent', trait: 'content.title' };
+    case 'template':
+      return { kind: 'template', template: '{{content.title}}' };
+    case 'weighted_choice':
+      return {
+        kind: 'weighted_choice',
+        choices: [
+          { value: 'published', weight: 60 },
+          { value: 'draft', weight: 25 },
+          { value: 'archived', weight: 8 },
+        ],
+      };
+    case 'regex':
+      return { kind: 'regex', pattern: '^[A-Z]{3}-[0-9]{5}$' };
+    case 'geometry':
+      return { kind: 'geometry', geometryType: props.field.options?.geometryType ?? 'Point' };
+    case 'markdown':
+      return { kind: 'markdown', paragraphs: 3 };
+    case 'html':
+      return { kind: 'html', paragraphs: 3 };
+    case 'm2m_random':
+      return { kind: 'm2m_random', min: 0, max: 4 };
   }
 }
 
@@ -273,6 +467,14 @@ function onFakerMethodChange(value: string) {
 }
 
 function buildStrategy(): GenerationStrategy {
+  const strategy = buildBase();
+  if (NO_NULL_RATE_KINDS.has(strategy.kind) || props.field.required) return strategy;
+  const percent = Number(nullRatePercent.value);
+  if (!Number.isFinite(percent) || percent <= 0) return strategy;
+  return { ...strategy, nullRate: Math.min(100, percent) / 100 };
+}
+
+function buildBase(): GenerationStrategy {
   const s = local.value;
   switch (s.kind) {
     case 'fixed':
@@ -315,9 +517,58 @@ function buildStrategy(): GenerationStrategy {
       return { kind: 'random_item_of_field', collectionField: itemOfField.value || 'collection' };
     case 'random_user_collection':
       return { kind: 'random_user_collection' };
+    case 'coherent':
+      return { kind: 'coherent', trait: coherentTrait.value };
+    case 'template':
+      return { kind: 'template', template: templateText.value };
+    case 'weighted_choice':
+      return { kind: 'weighted_choice', choices: parseWeighted(weightedText.value) };
+    case 'regex':
+      return { kind: 'regex', pattern: regexPattern.value };
+    case 'geometry':
+      return {
+        kind: 'geometry',
+        geometryType: geometryType.value,
+        bbox: parseBbox(bboxText.value),
+      };
+    case 'markdown':
+      return { kind: 'markdown', paragraphs: Math.max(1, Number(richParagraphs.value) || 3) };
+    case 'html':
+      return { kind: 'html', paragraphs: Math.max(1, Number(richParagraphs.value) || 3) };
+    case 'm2m_random': {
+      const min = Math.max(0, Number(m2mMin.value) || 0);
+      const max = Math.max(min, Number(m2mMax.value) || min);
+      return { kind: 'm2m_random', min, max };
+    }
     default:
       return s;
   }
+}
+
+function parseWeighted(text: string): Array<{ value: unknown; weight: number }> {
+  const out: Array<{ value: unknown; weight: number }> = [];
+  for (const part of text.split(',')) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const separator = trimmed.lastIndexOf(':');
+    if (separator === -1) {
+      out.push({ value: coerceValue(trimmed), weight: 10 });
+      continue;
+    }
+    const value = coerceValue(trimmed.slice(0, separator).trim());
+    const weight = Number(trimmed.slice(separator + 1).trim());
+    out.push({ value, weight: Number.isFinite(weight) && weight > 0 ? weight : 10 });
+  }
+  return out.length > 0 ? out : [{ value: 'alpha', weight: 10 }];
+}
+
+function parseBbox(text: string): [number, number, number, number] | undefined {
+  const parts = text
+    .split(',')
+    .map((p) => Number(p.trim()))
+    .filter((n) => Number.isFinite(n));
+  if (parts.length !== 4) return undefined;
+  return [parts[0]!, parts[1]!, parts[2]!, parts[3]!];
 }
 
 function coerceValue(raw: string): unknown {

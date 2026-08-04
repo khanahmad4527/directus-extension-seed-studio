@@ -11,7 +11,7 @@ import type { GenerationStrategy } from '../types';
 
 const props = defineProps<{ strategy: GenerationStrategy }>();
 
-type Family = 'faker' | 'relation' | 'random' | 'system' | 'constructive' | 'static';
+type Family = 'faker' | 'relation' | 'random' | 'system' | 'constructive' | 'static' | 'coherent';
 
 const family = computed<Family>(() => kindFamily(props.strategy.kind));
 const label = computed(() => describeStrategy(props.strategy));
@@ -20,16 +20,36 @@ const icon = computed(() => iconFor(family.value));
 
 function kindFamily(kind: GenerationStrategy['kind']): Family {
   if (kind === 'faker') return 'faker';
-  if (kind === 'm2o_random' || kind === 'file_reuse' || kind === 'random_user_collection' || kind === 'random_item_of_field') return 'relation';
-  if (kind.startsWith('random_')) return 'random';
+  if (kind === 'coherent' || kind === 'template') return 'coherent';
+  if (
+    kind === 'm2o_random' ||
+    kind === 'file_reuse' ||
+    kind === 'random_user_collection' ||
+    kind === 'random_item_of_field' ||
+    kind === 'm2m_random'
+  ) {
+    return 'relation';
+  }
+  if (kind.startsWith('random_') || kind === 'weighted_choice') return 'random';
   if (kind === 'system' || kind === 'skip' || kind === 'null') return 'system';
-  if (kind === 'uuid' || kind === 'sequence' || kind === 'lorem_paragraphs') return 'constructive';
+  if (
+    kind === 'uuid' ||
+    kind === 'sequence' ||
+    kind === 'lorem_paragraphs' ||
+    kind === 'markdown' ||
+    kind === 'html' ||
+    kind === 'regex' ||
+    kind === 'geometry'
+  ) {
+    return 'constructive';
+  }
   return 'static';
 }
 
 function iconFor(f: Family): string {
   switch (f) {
     case 'faker': return 'face';
+    case 'coherent': return 'hub';
     case 'relation': return 'link';
     case 'random': return 'casino';
     case 'system': return 'lock';
@@ -57,11 +77,22 @@ function describeStrategy(s: GenerationStrategy): string {
     case 'lorem_paragraphs': return `${s.count}× paragraph`;
     case 'random_user_collection': return 'random user collection';
     case 'random_item_of_field': return `item of ${s.collectionField}`;
+    case 'coherent': return s.trait;
+    case 'template': return s.template.length > 28 ? `${s.template.slice(0, 28)}…` : s.template;
+    case 'weighted_choice': return `${s.choices.length} weighted`;
+    case 'regex': return s.pattern.length > 24 ? `${s.pattern.slice(0, 24)}…` : s.pattern;
+    case 'geometry': return `geo ${s.geometryType ?? 'Point'}`;
+    case 'markdown': return `markdown ×${s.paragraphs ?? 3}`;
+    case 'html': return `html ×${s.paragraphs ?? 3}`;
+    case 'm2m_random': return `link ${s.min}–${s.max}`;
   }
 }
 
 function longTitle(s: GenerationStrategy): string {
-  return `${s.kind} — ${describeStrategy(s)}`;
+  const nulls = typeof s.nullRate === 'number' && s.nullRate > 0
+    ? ` · ${Math.round(s.nullRate * 100)}% empty`
+    : '';
+  return `${s.kind} — ${describeStrategy(s)}${nulls}`;
 }
 
 function formatValue(v: unknown): string {
@@ -103,6 +134,13 @@ function formatValue(v: unknown): string {
   color: var(--theme--primary);
   border-color: color-mix(in srgb, var(--theme--primary) 35%, transparent);
   background-color: var(--theme--primary-background);
+}
+
+/* coherent — derived from the row's shared entity */
+.family-coherent {
+  color: var(--theme--secondary, #6644ff);
+  border-color: color-mix(in srgb, var(--theme--secondary, #6644ff) 35%, transparent);
+  background-color: color-mix(in srgb, var(--theme--secondary, #6644ff) 10%, transparent);
 }
 
 /* relation — secondary (purple in default theme) */

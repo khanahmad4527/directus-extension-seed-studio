@@ -67,6 +67,111 @@
         </p>
       </article>
 
+      <article class="setting">
+        <header>
+          <h2>Realism</h2>
+          <p>How much the rows should behave like real content.</p>
+        </header>
+        <v-checkbox v-model="coherentRows" label="Coherent rows" />
+        <p class="setting-note">
+          One imaginary person or company per row, so name, email, username and city agree with each other.
+        </p>
+        <v-checkbox v-model="invariants" label="Cross-field invariants" />
+        <p class="setting-note">
+          Keeps <code>created ≤ updated</code>, <code>start ≤ end</code>, <code>cost ≤ price</code>, and drafts unpublished.
+        </p>
+        <v-checkbox v-model="realisticNulls" label="Realistic empty values" />
+        <p class="setting-note">
+          Leaves optional fields empty part of the time instead of filling every column.
+        </p>
+        <v-checkbox v-model="respectConditions" label="Respect conditional fields" />
+        <p class="setting-note">
+          Replays <code>meta.conditions</code> so rows match what the item form would allow.
+        </p>
+      </article>
+
+      <article class="setting">
+        <header>
+          <h2>Reproducibility</h2>
+          <p>The same seed and settings always produce the same rows.</p>
+        </header>
+        <div class="seed-row">
+          <v-input v-model="seedText" type="number" placeholder="random" />
+          <v-button secondary small @click="randomiseSeed">
+            <v-icon name="casino" small />
+          </v-button>
+        </div>
+        <p class="setting-note">Leave empty for a fresh seed. Every run records the seed it used.</p>
+
+        <v-select
+          v-model="locale"
+          :items="localeItems"
+          :disabled="!capabilities?.allLocales"
+          placeholder="en"
+        />
+        <p class="setting-note">
+          <template v-if="capabilities?.allLocales">
+            Locale for names, addresses and phone numbers.
+          </template>
+          <template v-else>
+            Locale switching needs the API extension — the in-browser engine ships English only.
+          </template>
+        </p>
+      </article>
+
+      <article class="setting">
+        <header>
+          <h2>Write mode</h2>
+          <p>How the rows reach the database.</p>
+        </header>
+        <div class="segmented" role="radiogroup" aria-label="Write mode">
+          <button
+            type="button"
+            class="segment"
+            :class="{ active: writeMode === 'safe' }"
+            role="radio"
+            :aria-checked="writeMode === 'safe'"
+            @click="writeMode = 'safe'"
+          >
+            <v-icon name="shield" small />
+            <span>Safe</span>
+          </button>
+          <button
+            type="button"
+            class="segment"
+            :class="{ active: writeMode === 'fast' }"
+            role="radio"
+            :aria-checked="writeMode === 'fast'"
+            :disabled="!capabilities?.fastWrite"
+            @click="capabilities?.fastWrite && (writeMode = 'fast')"
+          >
+            <v-icon name="bolt" small />
+            <span>Fast</span>
+          </button>
+        </div>
+        <p class="setting-note">
+          <template v-if="writeMode === 'safe'">
+            Writes exactly like the admin app: flows fire, and activity plus revisions are recorded per row.
+          </template>
+          <template v-else>
+            Skips hooks, flows, activity and revisions. Much faster on large runs, but
+            <code>user_created</code> stays empty because the write runs without accountability.
+          </template>
+        </p>
+        <p v-if="!capabilities?.fastWrite" class="setting-note">
+          Fast write needs the API extension: the REST API cannot suppress hooks or revisions.
+        </p>
+      </article>
+    </div>
+
+    <div v-if="insightWarnings.length" class="banner banner-warning" role="status">
+      <v-icon name="warning" />
+      <div>
+        <strong>Before you generate</strong>
+        <ul class="warning-list">
+          <li v-for="(warning, i) in insightWarnings" :key="i">{{ warning }}</li>
+        </ul>
+      </div>
     </div>
 
     <div v-if="error" class="banner banner-error" role="alert">
@@ -125,9 +230,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useSeedApi } from '../composables/useSeedApi';
-import type { StrategyMap } from '../types';
+import type { EngineCapabilities, PreviewResponse, RunOptions, StrategyMap } from '../types';
 
 interface Props {
   collection: string;
@@ -138,7 +243,7 @@ const props = defineProps<Props>();
 const emit = defineEmits<{
   (e: 'back'): void;
   (e: 'started', runId: string): void;
-  (e: 'preview-result', rows: Record<string, unknown>[]): void;
+  (e: 'preview-result', result: PreviewResponse): void;
 }>();
 
 const api = useSeedApi();
@@ -152,6 +257,18 @@ const previewing = ref(false);
 const generating = ref(false);
 const error = ref<string | null>(null);
 
+const coherentRows = ref(true);
+const invariants = ref(true);
+const realisticNulls = ref(false);
+const respectConditions = ref(true);
+const seedText = ref('');
+const locale = ref<string | null>(null);
+const writeMode = ref<'safe' | 'fast'>('safe');
+
+const capabilities = ref<EngineCapabilities | null>(null);
+const localeItems = ref<Array<{ text: string; value: string }>>([{ text: 'en', value: 'en' }]);
+const insightWarnings = ref<string[]>([]);
+
 const wipeConfirmOpen = ref(false);
 const wipeConfirmText = ref('');
 
@@ -163,6 +280,52 @@ watch(countText, (v) => {
 
 const batchSize = computed(() => Math.max(1, parseInt(batchText.value, 10) || 500));
 
+const runOptions = computed<RunOptions>(() => {
+  const seed = parseInt(seedText.value, 10);
+  return {
+    seed: Number.isFinite(seed) && seed >= 0 ? seed : null,
+    locale: locale.value,
+    coherentRows: coherentRows.value,
+    invariants: invariants.value,
+    realisticNulls: realisticNulls.value,
+    respectConditions: respectConditions.value,
+    writeMode: writeMode.value,
+  };
+});
+
+function randomiseSeed() {
+  seedText.value = String(Math.floor(Math.random() * 2_147_483_647));
+}
+
+onMounted(async () => {
+  const status = await api.status();
+  capabilities.value = status.capabilities;
+  localeItems.value = status.locales.map((code) => ({ text: code, value: code }));
+  // Fast write is the better default when the engine can actually do it, but the
+  // safe default stays for small runs where flows firing is the point.
+  if (!status.capabilities.fastWrite) writeMode.value = 'safe';
+  await loadInsights();
+});
+
+/**
+ * Pre-flight warnings: flows that would fire per row, revision volume, missing
+ * parent rows, and whether this instance looks like production.
+ */
+async function loadInsights() {
+  try {
+    const insights = await api.insights(props.collection, count.value);
+    insightWarnings.value = insights.warnings ?? [];
+  } catch {
+    insightWarnings.value = [];
+  }
+}
+
+let insightTimer: ReturnType<typeof setTimeout> | null = null;
+watch(count, () => {
+  if (insightTimer) clearTimeout(insightTimer);
+  insightTimer = setTimeout(loadInsights, 400);
+});
+
 async function onPreview() {
   error.value = null;
   previewing.value = true;
@@ -171,8 +334,9 @@ async function onPreview() {
       collection: props.collection,
       strategies: props.strategies,
       count: 10,
+      options: runOptions.value,
     });
-    emit('preview-result', result.rows);
+    emit('preview-result', result);
   } catch (err: any) {
     error.value = err?.response?.data?.error ?? err?.message ?? 'Preview failed';
   } finally {
@@ -205,6 +369,9 @@ async function runGeneration(wipeFirst: boolean) {
       count: count.value,
       batchSize: batchSize.value,
       wipeFirst,
+      // The engine refuses a wipe without this, on every code path.
+      confirm: wipeFirst ? props.collection : undefined,
+      options: runOptions.value,
     });
     emit('started', result.runId);
   } catch (err: any) {
@@ -374,6 +541,43 @@ async function runGeneration(wipeFirst: boolean) {
 }
 .banner-error strong { display: block; font-size: 14px; margin-bottom: 2px; }
 .banner-error p { margin: 0; font-size: 13px; opacity: 0.85; }
+
+.banner-warning {
+  border-left: 3px solid var(--theme--warning);
+  color: var(--theme--warning);
+}
+.banner-warning strong { display: block; font-size: 14px; margin-bottom: 2px; }
+.warning-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.setting-note {
+  margin: -4px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--theme--foreground-subdued);
+}
+.setting-note code {
+  font-family: var(--theme--fonts--monospace--font-family);
+  font-size: 11px;
+}
+
+.seed-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.seed-row > :first-child {
+  flex: 1;
+}
+
+.segment:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 
 /* Action bar */
 .action-bar {

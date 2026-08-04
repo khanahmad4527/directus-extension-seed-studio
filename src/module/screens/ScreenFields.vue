@@ -48,7 +48,32 @@
         <v-icon name="bookmark_add" small />
         Save current
       </button>
+
+      <button
+        v-if="schema.rowCount > 0"
+        type="button"
+        class="preset-save"
+        :disabled="profiling"
+        @click="learnFromData"
+        :title="`Sample existing ${schema.collection} rows and match their shape`"
+      >
+        <v-icon :name="profiling ? 'sync' : 'insights'" small :class="{ spin: profiling }" />
+        Learn from data
+      </button>
     </section>
+
+    <div v-if="profileSummary" class="banner banner-learn" role="status">
+      <v-icon name="insights" />
+      <div>
+        <strong>{{ profileSummary }}</strong>
+        <ul v-if="profileNotes.length" class="learn-list">
+          <li v-for="(note, i) in profileNotes.slice(0, 6)" :key="i">
+            <code>{{ note.field }}</code> — {{ note.note }}
+          </li>
+        </ul>
+        <p v-if="profileNotes.length > 6">…and {{ profileNotes.length - 6 }} more fields.</p>
+      </div>
+    </div>
 
     <div v-if="warning" class="banner banner-warning" role="alert">
       <v-icon name="warning" />
@@ -82,7 +107,14 @@
               v-tooltip="'Primary key'"
             />
             <v-icon
-              v-if="isLocked(f) && !f.isPrimaryKey"
+              v-if="f.isAlias"
+              name="visibility_off"
+              small
+              class="meta-icon"
+              v-tooltip="'Presentation/alias field — no database column to write'"
+            />
+            <v-icon
+              v-else-if="isLocked(f) && !f.isPrimaryKey"
               name="lock"
               small
               class="meta-icon"
@@ -94,14 +126,20 @@
             <span v-if="f.interface" class="meta-pill meta-pill-ghost">{{ f.interface }}</span>
             <span v-if="f.relation" class="meta-pill meta-pill-rel">
               <v-icon name="link" small />
-              → {{ f.relation.relatedCollection ?? '(m2a)' }}
+              → {{ f.relation.relatedCollection ?? relationLabel(f) }}
             </span>
+            <span v-if="f.isUnique" class="meta-pill meta-pill-ghost" v-tooltip="'Unique column — collisions are resolved automatically'">unique</span>
+            <span v-if="f.maxLength" class="meta-pill meta-pill-ghost">max {{ f.maxLength }}</span>
+            <span v-if="f.validation" class="meta-pill meta-pill-ghost" v-tooltip="'Has a Directus validation rule — generated values satisfy it'">validated</span>
+            <span v-if="f.conditions?.length" class="meta-pill meta-pill-ghost" v-tooltip="'Conditional field — rows respect its conditions'">conditional</span>
           </div>
         </div>
 
         <div class="field-strategy">
           <strategy-badge :strategy="effective(f)" />
           <span v-if="strategies[f.field]?.kind === 'skip'" class="skip-note">skipped</span>
+          <span v-if="nullRateOf(f)" class="skip-note">{{ nullRateOf(f) }}% empty</span>
+          <span v-if="f.reason" class="field-reason">{{ f.reason }}</span>
         </div>
 
         <div class="field-actions">
@@ -239,6 +277,9 @@ const saveOpen = ref(false);
 const saveName = ref('');
 const saving = ref(false);
 const saveError = ref<string | null>(null);
+const profiling = ref(false);
+const profileSummary = ref<string | null>(null);
+const profileNotes = ref<Array<{ field: string; note: string }>>([]);
 
 onMounted(async () => {
   try {
@@ -326,7 +367,57 @@ function presetTooltip(p: PresetRow): string {
 }
 
 function isLocked(f: FieldDescriptor): boolean {
-  return f.isSystemField || f.readonly;
+  // Alias/presentation fields have no column, so there is nothing to configure.
+  return f.isSystemField || f.readonly || f.isAlias;
+}
+
+function relationLabel(f: FieldDescriptor): string {
+  const type = f.relation?.type;
+  if (type === 'm2m') return `${f.relation?.junction ?? 'junction'} (m2m)`;
+  if (type === 'm2a') return '(m2a)';
+  if (type === 'o2m') return '(o2m)';
+  return '(relation)';
+}
+
+function nullRateOf(f: FieldDescriptor): number | null {
+  const rate = effective(f).nullRate;
+  if (typeof rate !== 'number' || rate <= 0) return null;
+  return Math.round(rate * 100);
+}
+
+/**
+ * Match the shape of the data already in the collection: value frequencies,
+ * numeric ranges, id formats and how often fields are left empty.
+ */
+async function learnFromData() {
+  profiling.value = true;
+  profileSummary.value = null;
+  profileNotes.value = [];
+  try {
+    const result = await api.profile(props.schema.collection, 300);
+    const applied: StrategyMap = { ...props.strategies };
+    const notes: Array<{ field: string; note: string }> = [];
+
+    for (const profile of result.profiles ?? []) {
+      if (!profile.suggested || profile.confidence === 'low') continue;
+      applied[profile.field] = profile.suggested;
+      notes.push({ field: profile.field, note: profile.note });
+    }
+
+    if (notes.length === 0) {
+      profileSummary.value = `Sampled ${result.sampleSize} rows of ${props.schema.collection} — nothing confident enough to change.`;
+      return;
+    }
+
+    emit('update:strategies', applied);
+    appliedId.value = null;
+    profileNotes.value = notes;
+    profileSummary.value = `Updated ${notes.length} field${notes.length === 1 ? '' : 's'} from ${result.sampleSize} existing rows.`;
+  } catch (err: any) {
+    profileSummary.value = err?.response?.data?.error ?? err?.message ?? 'Could not read existing rows.';
+  } finally {
+    profiling.value = false;
+  }
 }
 
 function effective(f: FieldDescriptor): GenerationStrategy {
@@ -367,8 +458,13 @@ const blockingError = computed(() => {
   for (const f of props.schema.fields) {
     if (isLocked(f)) continue;
     const s = effective(f);
-    if (f.required && (s.kind === 'null' || s.kind === 'skip')) {
+    if (!f.required) continue;
+    if (f.defaultValue !== null && f.defaultValue !== undefined) continue;
+    if (s.kind === 'null' || s.kind === 'skip') {
       return `Field "${f.field}" is required but its strategy is "${s.kind}".`;
+    }
+    if (typeof s.nullRate === 'number' && s.nullRate > 0) {
+      return `Field "${f.field}" is required, so it cannot be left empty ${Math.round(s.nullRate * 100)}% of the time.`;
     }
   }
   return null;
@@ -614,6 +710,39 @@ const generatedCount = computed(() => props.schema.fields.filter((f) => !isLocke
 .banner-warning p {
   color: var(--theme--warning);
   opacity: 0.85;
+}
+
+.banner-learn {
+  border-left: 3px solid var(--theme--primary);
+}
+.banner-learn :deep(.v-icon) {
+  --v-icon-color: var(--theme--primary);
+}
+.learn-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--theme--foreground-subdued);
+}
+.learn-list code {
+  font-family: var(--theme--fonts--monospace--font-family);
+  color: var(--theme--foreground);
+}
+
+.field-reason {
+  display: block;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--theme--foreground-subdued);
+  max-width: 42ch;
+}
+
+.spin {
+  animation: spin 1.4s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 /* Field list — card rows */

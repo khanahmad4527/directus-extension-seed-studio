@@ -1,8 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { detectStrategy, hasAutoManagedSpecial } from '../src/endpoint/core/strategy-detector.js';
+import {
+  detectField,
+  detectStrategy,
+  hasAutoManagedSpecial,
+  isAliasField,
+} from '../src/core/strategy-detector.js';
+import type { DetectContext } from '../src/core/strategy-detector.js';
 
-function ctx(overrides: Partial<Parameters<typeof detectStrategy>[0]> = {}) {
+function ctx(overrides: Partial<DetectContext> = {}): DetectContext {
   return {
     fieldName: 'foo',
     type: 'string',
@@ -29,13 +35,8 @@ describe('detectStrategy — auto-managed by special', () => {
   it('special user-created returns system', () => {
     assert.equal(detectStrategy(ctx({ fieldName: 'owner', specials: ['user-created'] })).kind, 'system');
   });
-  it('field named "id" WITHOUT pk/special is NOT system — treated as plain field', () => {
-    const s = detectStrategy(ctx({ fieldName: 'id', type: 'string' }));
-    assert.notEqual(s.kind, 'system');
-  });
-  it('field named "sort" WITHOUT special is NOT system', () => {
-    const s = detectStrategy(ctx({ fieldName: 'sort', type: 'integer' }));
-    assert.notEqual(s.kind, 'system');
+  it('field named "id" WITHOUT pk/special is NOT system', () => {
+    assert.notEqual(detectStrategy(ctx({ fieldName: 'id', type: 'string' })).kind, 'system');
   });
   it('hasAutoManagedSpecial flags auto-managed specials only', () => {
     assert.equal(hasAutoManagedSpecial(['uuid']), true);
@@ -47,152 +48,215 @@ describe('detectStrategy — auto-managed by special', () => {
   });
 });
 
-describe('detectStrategy — emails', () => {
+describe('detectStrategy — alias and presentation fields', () => {
+  it('type alias is an alias field', () => {
+    assert.equal(isAliasField([], 'alias', null), true);
+  });
+  it('presentation-divider is an alias field', () => {
+    assert.equal(isAliasField([], 'string', 'presentation-divider'), true);
+  });
+  it('group specials are alias fields', () => {
+    assert.equal(isAliasField(['group'], 'alias', 'group-detail'), true);
+    assert.equal(isAliasField(['no-data'], 'string', null), true);
+  });
+  it('a normal input is not an alias field', () => {
+    assert.equal(isAliasField([], 'string', 'input'), false);
+  });
+  it('divider fields are skipped, never written', () => {
+    const result = detectField(
+      ctx({ fieldName: 'focal_point_divider', type: 'alias', interfaceName: 'presentation-divider' })
+    );
+    assert.equal(result.strategy.kind, 'skip');
+    assert.match(result.reason, /no database column/i);
+  });
+});
+
+describe('detectStrategy — names', () => {
+  const method = (c: Partial<DetectContext>) => (detectStrategy(ctx(c)) as any).method;
+
   it('email field maps to internet.email', () => {
-    const s = detectStrategy(ctx({ fieldName: 'email' }));
-    assert.equal(s.kind, 'faker');
-    assert.equal((s as any).method, 'internet.email');
+    assert.equal(method({ fieldName: 'email' }), 'internet.email');
   });
   it('user_email also maps to email faker', () => {
-    const s = detectStrategy(ctx({ fieldName: 'user_email' }));
-    assert.equal(s.kind, 'faker');
-    assert.equal((s as any).method, 'internet.email');
+    assert.equal(method({ fieldName: 'user_email' }), 'internet.email');
   });
-  it('contact_email also maps to email faker', () => {
-    const s = detectStrategy(ctx({ fieldName: 'contact_email' }));
-    assert.equal(s.kind, 'faker');
-    assert.equal((s as any).method, 'internet.email');
+  it('first_name maps to person.firstName', () => {
+    assert.equal(method({ fieldName: 'first_name' }), 'person.firstName');
+  });
+  it('users.name maps to person.fullName', () => {
+    assert.equal(method({ fieldName: 'name', collectionName: 'users' }), 'person.fullName');
+  });
+  it('companies.name maps to company.name', () => {
+    assert.equal(method({ fieldName: 'name', collectionName: 'companies' }), 'company.name');
+  });
+  it('products.name maps to commerce.productName', () => {
+    assert.equal(method({ fieldName: 'name', collectionName: 'products' }), 'commerce.productName');
+  });
+  it('title resolves through the row entity so it matches the rest of the row', () => {
+    const strategy = detectStrategy(ctx({ fieldName: 'title', collectionName: 'articles' }));
+    assert.equal(strategy.kind, 'coherent');
+    assert.equal((strategy as any).trait, 'content.title');
+  });
+  it('slug is derived from the row title, not random words', () => {
+    const strategy = detectStrategy(ctx({ fieldName: 'slug' }));
+    assert.equal(strategy.kind, 'template');
+    assert.match((strategy as any).template, /content\.title/);
+  });
+});
+
+describe('detectStrategy — validation rules outrank name heuristics', () => {
+  it('_in constraint becomes a choice list', () => {
+    const strategy = detectStrategy(
+      ctx({ fieldName: 'title', constraints: { oneOf: ['a', 'b', 'c'] } })
+    );
+    assert.equal(strategy.kind, 'random_choice');
+    assert.deepEqual((strategy as any).choices, ['a', 'b', 'c']);
+  });
+  it('_regex constraint becomes a pattern strategy', () => {
+    const strategy = detectStrategy(ctx({ fieldName: 'sku', constraints: { regex: '^X-[0-9]{3}$' } }));
+    assert.equal(strategy.kind, 'regex');
+    assert.equal((strategy as any).pattern, '^X-[0-9]{3}$');
+  });
+  it('numeric bounds are respected by the generated range', () => {
+    const strategy = detectStrategy(
+      ctx({ fieldName: 'quantity', type: 'integer', constraints: { min: 5, max: 9 } })
+    );
+    assert.equal(strategy.kind, 'random_int');
+    assert.equal((strategy as any).min, 5);
+    assert.equal((strategy as any).max, 9);
+  });
+});
+
+describe('detectStrategy — dropdown choices', () => {
+  it('status choices are weighted so common states dominate', () => {
+    const strategy = detectStrategy(
+      ctx({
+        fieldName: 'status',
+        options: { choices: [{ value: 'published' }, { value: 'draft' }, { value: 'archived' }] },
+      })
+    );
+    assert.equal(strategy.kind, 'weighted_choice');
+    const choices = (strategy as any).choices as Array<{ value: string; weight: number }>;
+    const weight = (value: string) => choices.find((c) => c.value === value)!.weight;
+    assert.ok(weight('published') > weight('draft'));
+    assert.ok(weight('draft') > weight('archived'));
+  });
+
+  it('neutral choices stay uniform', () => {
+    const strategy = detectStrategy(
+      ctx({ fieldName: 'category', options: { choices: ['red', 'green', 'blue'] } })
+    );
+    assert.equal(strategy.kind, 'random_choice');
   });
 });
 
 describe('detectStrategy — relations', () => {
-  it('m2o relation returns m2o_random with related collection', () => {
-    const s = detectStrategy(
-      ctx({
-        fieldName: 'author',
-        relation: { type: 'm2o', relatedCollection: 'authors' },
-      })
+  it('m2o picks an existing related row', () => {
+    const strategy = detectStrategy(
+      ctx({ fieldName: 'author', relation: { type: 'm2o', relatedCollection: 'authors' } })
     );
-    assert.equal(s.kind, 'm2o_random');
-    assert.equal((s as any).relatedCollection, 'authors');
+    assert.equal(strategy.kind, 'm2o_random');
+    assert.equal((strategy as any).relatedCollection, 'authors');
   });
-  it('directus_files relation returns file_reuse', () => {
-    const s = detectStrategy(
+
+  it('file relations reuse an existing image', () => {
+    const strategy = detectStrategy(
+      ctx({ fieldName: 'avatar', relation: { type: 'm2o', relatedCollection: 'directus_files' } })
+    );
+    assert.equal(strategy.kind, 'file_reuse');
+  });
+
+  it('m2m fields generate junction rows', () => {
+    const strategy = detectStrategy(
       ctx({
-        fieldName: 'cover',
-        relation: { type: 'm2o', relatedCollection: 'directus_files' },
+        fieldName: 'tags',
+        relation: {
+          type: 'm2m',
+          relatedCollection: 'tags',
+          junction: 'posts_tags',
+          junctionParentField: 'posts_id',
+          junctionRelatedField: 'tags_id',
+        },
       })
     );
-    assert.equal(s.kind, 'file_reuse');
+    assert.equal(strategy.kind, 'm2m_random');
+  });
+
+  it('o2m is skipped with an explanation pointing at the child collection', () => {
+    const result = detectField(
+      ctx({ fieldName: 'comments', relation: { type: 'o2m', relatedCollection: 'comments' } })
+    );
+    assert.equal(result.strategy.kind, 'skip');
+    assert.match(result.reason, /comments/);
   });
 });
 
-describe('detectStrategy — name field uses collection context', () => {
-  it('users.name -> person.fullName', () => {
-    const s = detectStrategy(ctx({ fieldName: 'name', collectionName: 'users' }));
-    assert.equal(s.kind, 'faker');
-    assert.equal((s as any).method, 'person.fullName');
+describe('detectStrategy — geometry', () => {
+  it('uses the configured geometry type instead of a constant point', () => {
+    const strategy = detectStrategy(
+      ctx({ fieldName: 'area', type: 'geometry.Polygon', interfaceName: 'map' })
+    );
+    assert.equal(strategy.kind, 'geometry');
+    assert.equal((strategy as any).geometryType, 'Polygon');
   });
-  it('authors.name -> person.fullName', () => {
-    const s = detectStrategy(ctx({ fieldName: 'name', collectionName: 'authors' }));
-    assert.equal((s as any).method, 'person.fullName');
-  });
-  it('companies.name -> company.name', () => {
-    const s = detectStrategy(ctx({ fieldName: 'name', collectionName: 'companies' }));
-    assert.equal((s as any).method, 'company.name');
-  });
-  it('products.name -> commerce.productName', () => {
-    const s = detectStrategy(ctx({ fieldName: 'name', collectionName: 'products' }));
-    assert.equal((s as any).method, 'commerce.productName');
-  });
-  it('books.name -> lorem.sentence (titles)', () => {
-    const s = detectStrategy(ctx({ fieldName: 'name', collectionName: 'books' }));
-    assert.equal((s as any).method, 'lorem.sentence');
-  });
-  it('categories.name -> lorem.words (fallback)', () => {
-    const s = detectStrategy(ctx({ fieldName: 'name', collectionName: 'categories' }));
-    assert.equal((s as any).method, 'lorem.words');
-  });
-  it('full_name always -> person.fullName regardless of collection', () => {
-    const s = detectStrategy(ctx({ fieldName: 'full_name', collectionName: 'whatever' }));
-    assert.equal((s as any).method, 'person.fullName');
+
+  it('reads the geometry type from interface options', () => {
+    const strategy = detectStrategy(
+      ctx({ fieldName: 'route', type: 'geometry', interfaceName: 'map', options: { geometryType: 'LineString' } })
+    );
+    assert.equal((strategy as any).geometryType, 'LineString');
   });
 });
 
-describe('detectStrategy — choices', () => {
-  it('returns random_choice for select-dropdown with choices', () => {
-    const s = detectStrategy(
-      ctx({
-        fieldName: 'status',
-        interfaceName: 'select-dropdown',
-        options: { choices: [{ value: 'a' }, { value: 'b' }] },
-      })
-    );
-    assert.equal(s.kind, 'random_choice');
-    assert.deepEqual((s as any).choices, ['a', 'b']);
+describe('detectStrategy — rich text', () => {
+  it('markdown editors get structured markdown', () => {
+    assert.equal(detectStrategy(ctx({ fieldName: 'body', interfaceName: 'input-rich-text-md' })).kind, 'markdown');
   });
-
-  it('returns random_choice for select-radio with choices', () => {
-    const s = detectStrategy(
-      ctx({
-        fieldName: 'priority',
-        interfaceName: 'select-radio',
-        options: { choices: [{ value: 'low' }, { value: 'high' }] },
-      })
-    );
-    assert.equal(s.kind, 'random_choice');
-    assert.deepEqual((s as any).choices, ['low', 'high']);
-  });
-
-  it('returns random_choice for ANY interface when options.choices present', () => {
-    const s = detectStrategy(
-      ctx({
-        fieldName: 'visibility',
-        interfaceName: 'custom-toggle',
-        options: { choices: ['public', 'private', 'unlisted'] },
-      })
-    );
-    assert.equal(s.kind, 'random_choice');
-    assert.deepEqual((s as any).choices, ['public', 'private', 'unlisted']);
+  it('WYSIWYG editors get HTML', () => {
+    assert.equal(detectStrategy(ctx({ fieldName: 'body', interfaceName: 'input-rich-text-html' })).kind, 'html');
   });
 });
 
-describe('detectStrategy — slider with options', () => {
-  it('honors minValue/maxValue from slider options', () => {
-    const s = detectStrategy(
+describe('detectStrategy — realistic nulls', () => {
+  it('optional fields get a null rate only when asked for', () => {
+    const without = detectStrategy(ctx({ fieldName: 'nickname', nullable: true, required: false }));
+    assert.equal(without.nullRate, undefined);
+
+    const withNulls = detectStrategy(
       ctx({
-        fieldName: 'rating',
-        type: 'integer',
-        interfaceName: 'slider',
-        options: { minValue: 1, maxValue: 5, stepInterval: 1 },
+        fieldName: 'nickname',
+        nullable: true,
+        required: false,
+        detectOptions: { realisticNulls: true },
       })
     );
-    assert.equal(s.kind, 'random_int');
-    assert.equal((s as any).min, 1);
-    assert.equal((s as any).max, 5);
+    assert.ok((withNulls.nullRate ?? 0) > 0);
   });
 
-  it('falls back to 0-100 when slider options missing', () => {
-    const s = detectStrategy(
-      ctx({ fieldName: 'x', type: 'integer', interfaceName: 'slider' })
+  it('required fields are never given a null rate', () => {
+    const strategy = detectStrategy(
+      ctx({
+        fieldName: 'nickname',
+        nullable: false,
+        required: true,
+        detectOptions: { realisticNulls: true },
+      })
     );
-    assert.equal(s.kind, 'random_int');
-    assert.equal((s as any).min, 0);
-    assert.equal((s as any).max, 100);
+    assert.equal(strategy.nullRate, undefined);
   });
 });
 
-describe('detectStrategy — type fallback', () => {
-  it('integer falls back to random_int', () => {
-    const s = detectStrategy(ctx({ fieldName: 'x', type: 'integer' }));
-    assert.equal(s.kind, 'random_int');
+describe('detectStrategy — coherence', () => {
+  it('maps faker methods onto row entity traits when coherence is on', () => {
+    const strategy = detectStrategy(
+      ctx({ fieldName: 'email', detectOptions: { coherentRows: true } })
+    );
+    assert.equal(strategy.kind, 'coherent');
+    assert.equal((strategy as any).trait, 'contact.email');
   });
-  it('boolean falls back to random_boolean', () => {
-    const s = detectStrategy(ctx({ fieldName: 'flag', type: 'boolean' }));
-    assert.equal(s.kind, 'random_boolean');
-  });
-  it('uuid type (no special) returns uuid', () => {
-    const s = detectStrategy(ctx({ fieldName: 'other_id', type: 'uuid' }));
-    assert.equal(s.kind, 'uuid');
+
+  it('leaves faker methods alone when coherence is off', () => {
+    const strategy = detectStrategy(ctx({ fieldName: 'email', detectOptions: { coherentRows: false } }));
+    assert.equal(strategy.kind, 'faker');
   });
 });

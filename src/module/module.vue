@@ -49,6 +49,14 @@
     </template>
 
     <div class="seed-content">
+      <div v-if="engineNotice" class="engine-banner" :class="`engine-${engineNotice.tone}`" role="status">
+        <v-icon :name="engineNotice.icon" small />
+        <div>
+          <strong>{{ engineNotice.title }}</strong>
+          <p>{{ engineNotice.body }}</p>
+        </div>
+      </div>
+
       <header class="stepper" role="tablist" aria-label="Wizard steps">
         <button
           v-for="s in steps"
@@ -96,6 +104,9 @@
           :collection="schema?.collection ?? ''"
           :run-id="runId"
           :preview-rows="previewRows"
+          :preview-issues="previewIssues"
+          :preview-changes="previewChanges"
+          :preview-seed="previewSeed"
           :is-dry-run="isDryRun"
           @restart="resetWizard"
           @back="goTo(3)"
@@ -106,19 +117,26 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref } from 'vue';
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
 import ScreenCollections from './screens/ScreenCollections.vue';
 import ScreenFields from './screens/ScreenFields.vue';
 import ScreenSettings from './screens/ScreenSettings.vue';
 import ScreenProgress from './screens/ScreenProgress.vue';
-import type { CollectionDescriptor, StrategyMap } from './types';
+import type {
+  CollectionDescriptor,
+  EngineStatus,
+  InvariantChange,
+  PreviewResponse,
+  RowIssue,
+  StrategyMap,
+} from './types';
 
 interface RunSummary {
   id: string;
   collection: string;
   row_count_requested: number;
   row_count_written: number;
-  status: 'running' | 'success' | 'failed';
+  status: 'running' | 'success' | 'failed' | 'cancelled' | 'undone';
   started_at: string;
 }
 
@@ -137,7 +155,42 @@ const schema = ref<CollectionDescriptor | null>(null);
 const strategies = ref<StrategyMap>({});
 const runId = ref<string | null>(null);
 const previewRows = ref<Record<string, unknown>[] | null>(null);
+const previewIssues = ref<RowIssue[]>([]);
+const previewChanges = ref<InvariantChange[]>([]);
+const previewSeed = ref<number | null>(null);
 const isDryRun = ref(false);
+const engineStatus = ref<EngineStatus | null>(null);
+
+/**
+ * Say out loud which engine is running and what it cannot do. Silently degrading
+ * would leave someone wondering why their flows fired on a "fast" run.
+ */
+const engineNotice = computed(() => {
+  const status = engineStatus.value;
+  if (!status) return null;
+
+  if (status.engine === 'app') {
+    return {
+      tone: 'info' as const,
+      icon: 'cloud',
+      title: 'Running in this browser tab',
+      body: `${status.fallbackReason ?? ''} Flows and revisions cannot be suppressed, batches stay small, and closing the tab stops the run.`.trim(),
+    };
+  }
+
+  if (status.environment?.isProduction) {
+    return {
+      tone: 'warning' as const,
+      icon: 'warning',
+      title: 'This instance looks like production',
+      body: `Generated rows are indistinguishable from real content once written${
+        status.environment.publicUrl ? ` (${status.environment.publicUrl})` : ''
+      }. Every run can be undone from the progress screen.`,
+    };
+  }
+
+  return null;
+});
 
 const recentRuns = ref<RunSummary[]>([]);
 const recentRunsLoading = ref(false);
@@ -257,8 +310,11 @@ async function tryAutoResume() {
   }
 }
 
-function onPreviewResult(rows: Record<string, unknown>[]) {
-  previewRows.value = rows;
+function onPreviewResult(result: PreviewResponse) {
+  previewRows.value = result.rows;
+  previewIssues.value = result.issues ?? [];
+  previewChanges.value = result.changes ?? [];
+  previewSeed.value = result.seed ?? null;
   isDryRun.value = true;
   runId.value = null;
   step.value = 4;
@@ -271,12 +327,16 @@ function resetWizard() {
   strategies.value = {};
   runId.value = null;
   previewRows.value = null;
+  previewIssues.value = [];
+  previewChanges.value = [];
+  previewSeed.value = null;
   isDryRun.value = false;
   clearActive();
   loadRecentRuns();
 }
 
 onMounted(async () => {
+  engineStatus.value = await api.status().catch(() => null);
   await loadRecentRuns();
   // Poll recent runs every 4s so the sidebar reflects long-running work
   recentRunsTimer = setInterval(() => {
@@ -298,6 +358,38 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 32px;
+}
+
+/* ─── Engine banner ──────────────────────────────────── */
+.engine-banner {
+  display: flex;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--theme--border-radius);
+  background: var(--theme--background-subdued);
+  border: 1px solid var(--theme--border-color);
+}
+.engine-banner strong {
+  display: block;
+  font-size: 13px;
+}
+.engine-banner p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--theme--foreground-subdued);
+}
+.engine-info {
+  border-left: 3px solid var(--theme--primary);
+}
+.engine-info :deep(.v-icon) {
+  --v-icon-color: var(--theme--primary);
+}
+.engine-warning {
+  border-left: 3px solid var(--theme--warning);
+}
+.engine-warning :deep(.v-icon) {
+  --v-icon-color: var(--theme--warning);
 }
 
 /* ─── Sidebar ────────────────────────────────────────── */

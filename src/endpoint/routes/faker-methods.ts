@@ -1,11 +1,13 @@
-import type { Router } from 'express';
-import { FAKER_METHODS } from '../core/faker-methods.js';
+import type { ResponseLike, Router } from '../express-types.js';
+import { FAKER_METHODS, FAKER_MODULES } from '../../core/faker-methods.js';
+import { AVAILABLE_LOCALES } from '../faker-host.js';
 
 export function registerFakerMethodsRoute(router: Router): void {
-  router.get('/faker-methods', async (req: any, res) => {
-    if (!req.accountability?.admin) {
-      return res.status(403).json({ error: 'Admin only' });
-    }
-    return res.json({ methods: FAKER_METHODS });
+  router.get('/faker-methods', async (_req: any, res: ResponseLike) => {
+    return res.json({
+      methods: FAKER_METHODS,
+      modules: [...FAKER_MODULES].sort(),
+      locales: AVAILABLE_LOCALES,
+    });
   });
 }
