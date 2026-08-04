@@ -117,6 +117,80 @@ const COMPANYISH = /(compan|organi[sz]ation|business|partner|vendor|supplier|bra
 const PRODUCTISH = /(product|item|sku|catalog|inventory|merchandise|variant|listing|offer|package|plan|service|dish|menu|room|vehicle|property)/;
 const CONTENTISH = /(book|article|post|blog|story|chapter|page|movie|song|album|track|episode|video|lesson|course|news|review|comment|note|doc|guide|recipe|event|ticket|task|issue)/;
 
+/**
+ * Faker generates locale-flavoured cities, states and postcodes but a random
+ * global country, which produces rows like `city: "Johnson City", country:
+ * "Suriname"`. The address is only coherent if the country matches the locale
+ * the rest of it came from.
+ */
+const LOCALE_COUNTRY: Record<string, [string, string]> = {
+  en: ['United States', 'US'],
+  en_US: ['United States', 'US'],
+  en_GB: ['United Kingdom', 'GB'],
+  en_AU: ['Australia', 'AU'],
+  en_CA: ['Canada', 'CA'],
+  en_IE: ['Ireland', 'IE'],
+  en_IN: ['India', 'IN'],
+  en_NG: ['Nigeria', 'NG'],
+  en_ZA: ['South Africa', 'ZA'],
+  de: ['Germany', 'DE'],
+  de_AT: ['Austria', 'AT'],
+  de_CH: ['Switzerland', 'CH'],
+  fr: ['France', 'FR'],
+  fr_BE: ['Belgium', 'BE'],
+  fr_CA: ['Canada', 'CA'],
+  fr_CH: ['Switzerland', 'CH'],
+  es: ['Spain', 'ES'],
+  es_MX: ['Mexico', 'MX'],
+  pt_BR: ['Brazil', 'BR'],
+  pt_PT: ['Portugal', 'PT'],
+  it: ['Italy', 'IT'],
+  nl: ['Netherlands', 'NL'],
+  nl_BE: ['Belgium', 'BE'],
+  ja: ['Japan', 'JP'],
+  ko: ['South Korea', 'KR'],
+  zh_CN: ['China', 'CN'],
+  zh_TW: ['Taiwan', 'TW'],
+  pl: ['Poland', 'PL'],
+  ru: ['Russia', 'RU'],
+  uk: ['Ukraine', 'UA'],
+  tr: ['Turkey', 'TR'],
+  sv: ['Sweden', 'SE'],
+  nb_NO: ['Norway', 'NO'],
+  fi: ['Finland', 'FI'],
+  cs_CZ: ['Czechia', 'CZ'],
+  sk: ['Slovakia', 'SK'],
+  hu: ['Hungary', 'HU'],
+  ro: ['Romania', 'RO'],
+  el: ['Greece', 'GR'],
+  he: ['Israel', 'IL'],
+  hr: ['Croatia', 'HR'],
+  lv: ['Latvia', 'LV'],
+  id_ID: ['Indonesia', 'ID'],
+  th: ['Thailand', 'TH'],
+  vi: ['Vietnam', 'VN'],
+  fa: ['Iran', 'IR'],
+  ur: ['Pakistan', 'PK'],
+  hi: ['India', 'IN'],
+  ne: ['Nepal', 'NP'],
+  ka_GE: ['Georgia', 'GE'],
+  az: ['Azerbaijan', 'AZ'],
+  mk: ['North Macedonia', 'MK'],
+  af_ZA: ['South Africa', 'ZA'],
+  zu_ZA: ['South Africa', 'ZA'],
+  yo_NG: ['Nigeria', 'NG'],
+};
+
+export function localeGeography(faker: any): { country: string; countryCode: string } | null {
+  const code = faker?.definitions?.metadata?.code;
+  if (typeof code !== 'string') return null;
+  const exact = LOCALE_COUNTRY[code];
+  if (exact) return { country: exact[0], countryCode: exact[1] };
+  const language = code.split('_')[0] ?? '';
+  const byLanguage = LOCALE_COUNTRY[language];
+  return byLanguage ? { country: byLanguage[0], countryCode: byLanguage[1] } : null;
+}
+
 export function detectFlavor(collectionName?: string): EntityFlavor {
   if (!collectionName) return 'generic';
   const c = collectionName.toLowerCase();
@@ -189,6 +263,7 @@ export function createRowEntity(rng: Rng, ctx: RowEntityContext): RowEntity {
 
   const latitude = memo(() => rng.float(-60, 70, 6));
   const longitude = memo(() => rng.float(-170, 170, 6));
+  const geography = memo(() => localeGeography(f));
 
   const person: PersonEntity = {
     get firstName() {
@@ -286,10 +361,11 @@ export function createRowEntity(rng: Rng, ctx: RowEntityContext): RowEntity {
       return String(f.location.state({ abbreviated: true }));
     },
     get country() {
-      return String(f.location.country());
+      // Match the locale the street/city/postcode came from.
+      return geography()?.country ?? String(f.location.country());
     },
     get countryCode() {
-      return String(f.location.countryCode());
+      return geography()?.countryCode ?? String(f.location.countryCode());
     },
     get zip() {
       return String(f.location.zipCode());

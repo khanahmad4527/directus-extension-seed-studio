@@ -70,6 +70,13 @@ describe('row coherence', () => {
     assert.notEqual(first, second);
   });
 
+  it('matches the country to the locale the address came from', () => {
+    const entity = createRowEntity(makeRng(17), { rowIndex: 0, collectionName: 'offices' });
+    // The English locale produces US cities, states and ZIP codes.
+    assert.equal(entity.location.country, 'United States');
+    assert.equal(entity.location.countryCode, 'US');
+  });
+
   it('readTrait resolves dotted paths and rejects nonsense safely', () => {
     const entity = createRowEntity(makeRng(16), { rowIndex: 0 });
     assert.equal(typeof readTrait(entity, 'location.city'), 'string');
