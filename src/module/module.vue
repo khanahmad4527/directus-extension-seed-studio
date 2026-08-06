@@ -79,38 +79,49 @@
       </header>
 
       <main class="screen-host">
-        <screen-collections
-          v-if="step === 1"
-          @selected="onCollectionSelected"
-        />
-        <screen-fields
-          v-else-if="step === 2 && schema"
-          :schema="schema"
-          :strategies="strategies"
-          @update:strategies="strategies = $event"
-          @back="goTo(1)"
-          @next="goTo(3)"
-        />
-        <screen-settings
-          v-else-if="step === 3 && schema"
-          :collection="schema.collection"
-          :strategies="strategies"
-          @back="goTo(2)"
-          @started="onGenerationStarted"
-          @preview-result="onPreviewResult"
-        />
-        <screen-progress
-          v-else-if="step === 4"
-          :collection="schema?.collection ?? ''"
-          :run-id="runId"
-          :preview-rows="previewRows"
-          :preview-issues="previewIssues"
-          :preview-changes="previewChanges"
-          :preview-seed="previewSeed"
-          :is-dry-run="isDryRun"
-          @restart="resetWizard"
-          @back="goTo(3)"
-        />
+        <!--
+          Field choices and run settings survive stepping away and back: a dry
+          run must not silently reset the seed, write mode or row count you just
+          chose. Keyed by collection so picking a different one starts clean, and
+          ScreenProgress is deliberately excluded so its progress subscription
+          still tears down when you leave it.
+        -->
+        <keep-alive :include="['ScreenFields', 'ScreenSettings']" :max="4">
+          <screen-collections
+            v-if="step === 1"
+            @selected="onCollectionSelected"
+          />
+          <screen-fields
+            v-else-if="step === 2 && schema"
+            :key="`fields-${schema.collection}`"
+            :schema="schema"
+            :strategies="strategies"
+            @update:strategies="strategies = $event"
+            @back="goTo(1)"
+            @next="goTo(3)"
+          />
+          <screen-settings
+            v-else-if="step === 3 && schema"
+            :key="`settings-${schema.collection}`"
+            :collection="schema.collection"
+            :strategies="strategies"
+            @back="goTo(2)"
+            @started="onGenerationStarted"
+            @preview-result="onPreviewResult"
+          />
+          <screen-progress
+            v-else-if="step === 4"
+            :collection="schema?.collection ?? ''"
+            :run-id="runId"
+            :preview-rows="previewRows"
+            :preview-issues="previewIssues"
+            :preview-changes="previewChanges"
+            :preview-seed="previewSeed"
+            :is-dry-run="isDryRun"
+            @restart="resetWizard"
+            @back="goTo(3)"
+          />
+        </keep-alive>
       </main>
     </div>
   </private-view>

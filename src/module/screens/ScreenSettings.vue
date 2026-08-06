@@ -230,6 +230,10 @@
 </template>
 
 <script setup lang="ts">
+// Named so <keep-alive :include> can match it — the wizard keeps this screen's
+// state alive while you step away to a dry run and back.
+defineOptions({ name: 'ScreenSettings' });
+
 import { computed, onMounted, ref, watch } from 'vue';
 import { useSeedApi } from '../composables/useSeedApi';
 import type { EngineCapabilities, PreviewResponse, RunOptions, StrategyMap } from '../types';

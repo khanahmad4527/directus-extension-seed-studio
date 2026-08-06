@@ -143,14 +143,12 @@ export function detectField(ctx: DetectContext): DetectResult {
     return { strategy: { kind: 'system' }, reason: 'Directus fills this automatically' };
   }
 
-  if (ctx.isAlias ?? isAliasField(specials, type, interfaceName)) {
-    return {
-      strategy: { kind: 'skip', reason: 'alias' },
-      reason: 'Presentation/alias field — no database column to write',
-    };
-  }
+  // Relations are resolved before the alias check on purpose: Directus models
+  // m2m, o2m and m2a fields as `type: 'alias'`, so an alias-first check would
+  // skip every relational field and junction rows would never be written.
+  // A relational alias still writes no column of its own — the generator skips
+  // it during row building and handles it in the junction pass.
 
-  // Relations first: a FK cannot be satisfied by a generated scalar.
   if (relation && relation.relatedCollection === 'directus_files') {
     return withNulls(
       { kind: 'file_reuse', mimeFilter: 'image/' },
@@ -193,6 +191,15 @@ export function detectField(ctx: DetectContext): DetectResult {
       `Many-to-one — picks an existing ${relation.relatedCollection} row`,
       0.15
     );
+  }
+
+  // Presentation-only fields: dividers, notices, groups — nothing to write, and
+  // no relation to resolve either.
+  if (ctx.isAlias ?? isAliasField(specials, type, interfaceName)) {
+    return {
+      strategy: { kind: 'skip', reason: 'alias' },
+      reason: 'Presentation/alias field — no database column to write',
+    };
   }
 
   if (type === 'uuid') {

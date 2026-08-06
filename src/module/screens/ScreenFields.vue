@@ -241,6 +241,10 @@
 </template>
 
 <script setup lang="ts">
+// Named so <keep-alive :include> can match it — the wizard keeps this screen's
+// state alive while you step away to a dry run and back.
+defineOptions({ name: 'ScreenFields' });
+
 import { computed, onMounted, ref } from 'vue';
 import StrategyBadge from '../components/StrategyBadge.vue';
 import StrategyEditor from '../components/StrategyEditor.vue';
@@ -367,8 +371,11 @@ function presetTooltip(p: PresetRow): string {
 }
 
 function isLocked(f: FieldDescriptor): boolean {
-  // Alias/presentation fields have no column, so there is nothing to configure.
-  return f.isSystemField || f.readonly || f.isAlias;
+  if (f.isSystemField || f.readonly) return true;
+  // An m2m field is an alias with no column of its own, but its link count is
+  // worth editing — the junction rows are real.
+  if (f.isAlias) return effective(f).kind !== 'm2m_random';
+  return false;
 }
 
 function relationLabel(f: FieldDescriptor): string {

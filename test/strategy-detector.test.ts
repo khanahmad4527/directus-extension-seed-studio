@@ -166,10 +166,15 @@ describe('detectStrategy — relations', () => {
     assert.equal(strategy.kind, 'file_reuse');
   });
 
-  it('m2m fields generate junction rows', () => {
+  // Directus stores every m2m/o2m/m2a field as `type: 'alias'` with a relational
+  // special. Detection has to look past that, or junction rows never get written.
+  it('m2m fields generate junction rows even though Directus types them as alias', () => {
     const strategy = detectStrategy(
       ctx({
         fieldName: 'tags',
+        type: 'alias',
+        specials: ['m2m'],
+        interfaceName: 'list-m2m',
         relation: {
           type: 'm2m',
           relatedCollection: 'tags',
@@ -184,10 +189,23 @@ describe('detectStrategy — relations', () => {
 
   it('o2m is skipped with an explanation pointing at the child collection', () => {
     const result = detectField(
-      ctx({ fieldName: 'comments', relation: { type: 'o2m', relatedCollection: 'comments' } })
+      ctx({
+        fieldName: 'comments',
+        type: 'alias',
+        specials: ['o2m'],
+        relation: { type: 'o2m', relatedCollection: 'comments' },
+      })
     );
     assert.equal(result.strategy.kind, 'skip');
     assert.match(result.reason, /comments/);
+  });
+
+  it('a presentation alias with no relation is still skipped as no-data', () => {
+    const result = detectField(
+      ctx({ fieldName: 'meta_group', type: 'alias', specials: ['group'], interfaceName: 'group-detail' })
+    );
+    assert.equal(result.strategy.kind, 'skip');
+    assert.match(result.reason, /no database column/i);
   });
 });
 

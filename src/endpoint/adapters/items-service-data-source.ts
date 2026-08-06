@@ -143,7 +143,10 @@ export class ItemsServiceDataSource implements SeedDataSource {
 
   async count(collection: string): Promise<number> {
     try {
-      const result = await this.items(collection).readByQuery({ aggregate: { count: '*' } });
+      // `Aggregate.count` is `string[]`. Passing the bare string '*' makes query
+      // validation drop the aggregate, and the call quietly returns ordinary rows
+      // with no `count` — i.e. every collection reports 0.
+      const result = await this.items(collection).readByQuery({ aggregate: { count: ['*'] } });
       const first = Array.isArray(result) ? result[0] : result;
       const value = first?.count;
       const parsed = typeof value === 'string' ? parseInt(value, 10) : Number(value ?? 0);
@@ -170,7 +173,7 @@ export class ItemsServiceDataSource implements SeedDataSource {
 
   async groupCount(collection: string, field: string, limit: number): Promise<GroupCount[]> {
     const rows = (await this.items(collection).readByQuery({
-      aggregate: { count: '*' },
+      aggregate: { count: ['*'] },
       groupBy: [field],
       limit,
       sort: ['-count'],
@@ -185,7 +188,7 @@ export class ItemsServiceDataSource implements SeedDataSource {
 
   async numericStats(collection: string, field: string): Promise<NumericStats> {
     const rows = (await this.items(collection).readByQuery({
-      aggregate: { min: [field], max: [field], avg: [field], count: '*' },
+      aggregate: { min: [field], max: [field], avg: [field], count: ['*'] },
     })) as any[];
     const row = Array.isArray(rows) ? rows[0] : rows;
     return {
