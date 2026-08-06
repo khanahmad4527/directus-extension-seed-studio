@@ -326,3 +326,93 @@ describe('orderFieldsByDependency', () => {
     assert.equal(ordered.length, 2);
   });
 });
+
+describe('reproducibility across time', () => {
+  function datedSource() {
+    return new FakeDataSource({
+      collections: { events: { primary: 'id' } },
+      fields: {
+        events: [
+          rawField('id', 'integer', { schema: { is_primary_key: true } }),
+          rawField('title', 'string', { meta: { interface: 'input' } }),
+          rawField('happened_at', 'dateTime', { meta: { interface: 'datetime' } }),
+          rawField('created', 'dateTime', { meta: { interface: 'datetime' } }),
+        ],
+      },
+    });
+  }
+
+  it('same seed AND same anchor reproduce identical dates', async () => {
+    const now = '2026-03-01T12:00:00.000Z';
+    const first = await runPreview(
+      { collection: 'events', strategies: {}, count: 5, options: { seed: 99, now } },
+      { ds: datedSource(), rng: makeRng(99) }
+    );
+    const second = await runPreview(
+      { collection: 'events', strategies: {}, count: 5, options: { seed: 99, now } },
+      { ds: datedSource(), rng: makeRng(99) }
+    );
+    assert.deepEqual(second.rows, first.rows);
+  });
+
+  it('reports the anchor it used so a run can be replayed', async () => {
+    const now = '2026-03-01T12:00:00.000Z';
+    const result = await runPreview(
+      { collection: 'events', strategies: {}, count: 2, options: { seed: 1, now } },
+      { ds: datedSource(), rng: makeRng(1) }
+    );
+    assert.equal(result.now, now);
+    for (const row of result.rows) {
+      assert.ok(new Date(String(row.happened_at)) <= new Date(now), `${row.happened_at} is after the anchor`);
+    }
+  });
+
+  it('a different anchor moves the dates', async () => {
+    const early = await runPreview(
+      { collection: 'events', strategies: {}, count: 3, options: { seed: 7, now: '2025-01-01T00:00:00.000Z' } },
+      { ds: datedSource(), rng: makeRng(7) }
+    );
+    const late = await runPreview(
+      { collection: 'events', strategies: {}, count: 3, options: { seed: 7, now: '2026-01-01T00:00:00.000Z' } },
+      { ds: datedSource(), rng: makeRng(7) }
+    );
+    assert.notDeepEqual(late.rows, early.rows);
+    // Same seed, so the non-date column is unchanged.
+    assert.equal(late.rows[0]!.title, early.rows[0]!.title);
+  });
+
+  it('a generation run reports its anchor too', async () => {
+    const ds = datedSource();
+    const result = await runGeneration(
+      { collection: 'events', strategies: {}, count: 2, options: { seed: 3, now: '2026-05-05T00:00:00.000Z' } },
+      { ds, rng: makeRng(3) }
+    );
+    assert.equal(result.now, '2026-05-05T00:00:00.000Z');
+  });
+});
+
+describe('failed field values are reported, not silently emptied', () => {
+  it('warns when a strategy throws for every row', async () => {
+    const ds = new FakeDataSource({
+      collections: { posts: { primary: 'id' } },
+      fields: {
+        posts: [
+          rawField('id', 'integer', { schema: { is_primary_key: true } }),
+          rawField('code', 'string', { meta: { interface: 'input' }, schema: { is_nullable: true } }),
+        ],
+      },
+    });
+
+    // A faker call that throws every time: picking from an empty dataset.
+    const result = await runGeneration(
+      {
+        collection: 'posts',
+        strategies: { code: { kind: 'faker', method: 'helpers.arrayElement', args: [[]] } },
+        count: 4,
+      },
+      { ds, rng: makeRng() }
+    );
+    assert.equal(result.rowsWritten, 4);
+    assert.match(result.warnings.join(' '), /could not be generated/i);
+  });
+});

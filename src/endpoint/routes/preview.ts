@@ -1,5 +1,6 @@
 import type { ResponseLike, Router } from '../express-types.js';
 import { runPreview } from '../../core/generator.js';
+import { truncateMessage } from '../../core/request-validation.js';
 import { buildEngine, sanitiseOptions, type RouteDeps } from '../engine-context.js';
 import { wrapLogger } from '../logger.js';
 
@@ -37,9 +38,10 @@ export function registerPreviewRoute(router: Router, deps: RouteDeps): void {
         issues: result.issues,
         changes: result.changes,
         seed: result.seed,
+        now: result.now,
       });
     } catch (err: any) {
-      return res.status(400).json({ error: err?.message ?? 'Preview failed' });
+      return res.status(400).json({ error: truncateMessage(err?.message ?? 'Preview failed', 500) });
     }
   });
 }

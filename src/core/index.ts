@@ -54,6 +54,15 @@ export {
   validateRow,
 } from './validation.js';
 export { applyInvariants, type InvariantChange } from './invariants.js';
+export {
+  isUnsafeFieldName,
+  LIMITS,
+  truncateMessage,
+  ValidationError,
+  validateRowCount,
+  validateStrategy,
+  validateStrategyMap,
+} from './request-validation.js';
 export { applyConditions, conditionDependencies, type ConditionOutcome } from './conditions.js';
 export { StrategyExecutor, formatDateForType, type RowContext } from './strategy-executor.js';
 export {

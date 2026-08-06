@@ -93,7 +93,17 @@ export function readLocalRuns(): LocalRunRecord[] {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    // Anything in localStorage can be edited by hand; keep only well-formed rows
+    // so the history list and Undo cannot be fed nonsense.
+    return parsed.filter(
+      (row: any) =>
+        row &&
+        typeof row === 'object' &&
+        typeof row.id === 'string' &&
+        typeof row.collection === 'string' &&
+        (row.created_ids === undefined || row.created_ids === null || Array.isArray(row.created_ids))
+    );
   } catch {
     return [];
   }

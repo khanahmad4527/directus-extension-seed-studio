@@ -1,6 +1,7 @@
 import type { ResponseLike, Router } from '../express-types.js';
 import { runGeneration } from '../../core/generator.js';
-import type { GenerationRequest } from '../../core/types.js';
+import { truncateMessage, ValidationError, validateRowCount } from '../../core/request-validation.js';
+import type { GenerationRequest, ProgressEvent } from '../../core/types.js';
 import { createPreset, updateAuditEnd, writeAuditStart } from '../audit.js';
 import { buildEngine, sanitiseOptions, type RouteDeps } from '../engine-context.js';
 import { wrapLogger } from '../logger.js';
@@ -19,8 +20,10 @@ export function registerGenerateRoutes(router: Router, deps: RouteDeps): void {
       if (!body.strategies || typeof body.strategies !== 'object') {
         return res.status(400).json({ error: 'strategies is required' });
       }
-      if (!Number.isFinite(body.count) || body.count <= 0) {
-        return res.status(400).json({ error: 'count must be a positive integer' });
+      try {
+        validateRowCount(body.count);
+      } catch (err: any) {
+        return res.status(400).json({ error: err?.message ?? 'count is invalid' });
       }
       if (body.wipeFirst && body.confirm !== body.collection) {
         return res.status(400).json({
@@ -36,6 +39,11 @@ export function registerGenerateRoutes(router: Router, deps: RouteDeps): void {
       let auditId = '';
       try {
         auditId = await writeAuditStart(deps.services, engine.schema, req.accountability, {
+          // The run record shares the run id on purpose. The progress stream, the
+          // history list and Undo all key off the same value; giving the row its
+          // own UUID meant the UI could never find the run it had just watched,
+          // so the seed stayed hidden and Undo never enabled.
+          id: runId,
           collection: body.collection,
           row_count_requested: body.count,
           row_count_written: 0,
@@ -77,6 +85,11 @@ export function registerGenerateRoutes(router: Router, deps: RouteDeps): void {
         requested: body.count,
       });
 
+      // The terminal event is held back until the audit row is updated. The UI
+      // reads that row the moment it sees `complete` — to show the seed and
+      // enable Undo — so emitting first is a race it loses on fast runs.
+      let terminal: Omit<ProgressEvent, 'runId'> | null = null;
+
       // The run deliberately outlives this request — that is what the API engine
       // is for. Progress goes out over SSE; the audit row is the durable record.
       void runGeneration(
@@ -86,7 +99,13 @@ export function registerGenerateRoutes(router: Router, deps: RouteDeps): void {
           rng: engine.rng,
           token: active.token,
           logger: wrapLogger(deps.logger),
-          onProgress: (event) => sseBus.emit(runId, { ...event, runId }),
+          onProgress: (event) => {
+            if (event.type === 'complete' || event.type === 'cancelled') {
+              terminal = event;
+              return;
+            }
+            sseBus.emit(runId, { ...event, runId });
+          },
         }
       )
         .then(async (result) => {
@@ -96,13 +115,17 @@ export function registerGenerateRoutes(router: Router, deps: RouteDeps): void {
             duration_ms: result.durationMs,
             completed_at: new Date().toISOString(),
             seed: result.seed,
+            options: { ...options, now: result.now },
             created_ids: result.createdIds.slice(0, UNDO_ID_LIMIT),
             undoable: !result.createdIdsTruncated && result.createdIds.length > 0,
-            error_message: result.warnings.length > 0 ? result.warnings.join('\n') : null,
+            error_message: result.warnings.length > 0 ? truncateMessage(result.warnings.join('\n')) : null,
           }).catch(() => undefined);
         })
         .catch(async (err: any) => {
-          const message = err?.message ?? String(err);
+          // Batch failures quote the offending SQL, which for a 500-row insert is
+          // megabytes. The audit column wants a message, not the statement.
+          const message = truncateMessage(err?.message ?? String(err));
+          terminal = null;
           sseBus.emit(runId, { runId, type: 'error', message });
           deps.logger?.error?.({ runId, err: message }, 'Seed Studio generation failed');
           await updateAuditEnd(deps.services, engine.schema, req.accountability, auditId, {
@@ -112,12 +135,14 @@ export function registerGenerateRoutes(router: Router, deps: RouteDeps): void {
           }).catch(() => undefined);
         })
         .finally(() => {
+          if (terminal) sseBus.emit(runId, { ...(terminal as Omit<ProgressEvent, 'runId'>), runId });
           runRegistry.finish(runId);
         });
 
       return res.json({ runId, auditId, seed: engine.seed });
     } catch (err: any) {
-      return res.status(500).json({ error: err?.message ?? 'Generate failed' });
+      const status = err instanceof ValidationError ? 400 : 500;
+      return res.status(status).json({ error: truncateMessage(err?.message ?? 'Generate failed', 500) });
     }
   });
 

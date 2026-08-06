@@ -1,7 +1,7 @@
 import { createRng, randomSeed, type Rng } from '../core/rng.js';
 import type { RunOptions } from '../core/types.js';
 import { ItemsServiceDataSource } from './adapters/items-service-data-source.js';
-import { createFakerInstance } from './faker-host.js';
+import { createFakerInstance, isSupportedLocale } from './faker-host.js';
 
 export interface RouteDeps {
   services: any;
@@ -50,7 +50,12 @@ export function sanitiseOptions(input: any): RunOptions {
   if (!input || typeof input !== 'object') return options;
 
   if (input.seed !== undefined && input.seed !== null) options.seed = normaliseSeed(input.seed);
-  if (typeof input.locale === 'string' && input.locale.trim() !== '') options.locale = input.locale.trim();
+  if (typeof input.now === 'string' && Number.isFinite(Date.parse(input.now))) {
+    options.now = new Date(input.now).toISOString();
+  }
+  if (typeof input.locale === 'string' && isSupportedLocale(input.locale.trim())) {
+    options.locale = input.locale.trim();
+  }
   if (typeof input.coherentRows === 'boolean') options.coherentRows = input.coherentRows;
   if (typeof input.invariants === 'boolean') options.invariants = input.invariants;
   if (typeof input.respectConditions === 'boolean') options.respectConditions = input.respectConditions;

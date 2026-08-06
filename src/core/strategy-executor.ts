@@ -20,6 +20,11 @@ const UNIQUE_PRELOAD_LIMIT = 50_000;
 export interface ExecutorOptions {
   /** Pre-load existing values of unique fields so we never collide with them. */
   preloadUnique?: boolean;
+  /**
+   * Epoch milliseconds this run treats as "now". Fixed for the whole run so
+   * relative dates are reproducible; defaults to the moment the executor is built.
+   */
+  now?: number;
 }
 
 export interface RowContext {
@@ -30,6 +35,13 @@ export interface RowContext {
 
 export class StrategyExecutor {
   readonly registry = new UniqueRegistry();
+  /**
+   * A field that throws every row would otherwise be invisible: the executor
+   * swallows the error so one bad strategy cannot abort a 100k-row run. Counting
+   * the swallowed failures lets the run report them instead of silently writing
+   * empty values.
+   */
+  private failures = 0;
 
   private fkPools = new Map<string, unknown[]>();
   private filePools = new Map<string, unknown[]>();
@@ -37,11 +49,15 @@ export class StrategyExecutor {
   private itemPools = new Map<string, unknown[]>();
   private pendingItemPools = new Map<string, Promise<unknown[]>>();
 
+  private readonly now: number;
+
   constructor(
     private ds: SeedDataSource,
     private rng: Rng,
     private options: ExecutorOptions = {}
-  ) {}
+  ) {
+    this.now = options.now ?? Date.now();
+  }
 
   /**
    * Load the reference data a run needs — and nothing else.
@@ -103,7 +119,12 @@ export class StrategyExecutor {
   }
 
   newEntity(rowIndex: number, collectionName?: string): RowEntity {
-    return createRowEntity(this.rng, { rowIndex, collectionName });
+    return createRowEntity(this.rng, { rowIndex, collectionName, now: new Date(this.now) });
+  }
+
+  /** How many field values fell back to empty because their strategy threw. */
+  get failureCount(): number {
+    return this.failures;
   }
 
   /** Re-seed for a row so row N is reproducible independently of batching. */
@@ -134,7 +155,8 @@ export class StrategyExecutor {
       const raw = await this.runStrategy(strategy, descriptor, ctx);
       return postProcessValue(raw, descriptor, { rowIndex: ctx.rowIndex, registry: this.registry });
     } catch {
-      // A single unlucky field must not abort a 100k-row run.
+      // A single unlucky field must not abort a 100k-row run — but it is counted.
+      this.failures += 1;
       return descriptor.nullable ? null : '';
     }
   }
@@ -251,7 +273,7 @@ export class StrategyExecutor {
   }
 
   private buildDate(daysBack: number, daysForward: number, skew?: 'recent' | 'uniform'): Date {
-    const now = new Date();
+    const now = new Date(this.now);
     const back = Math.max(0, daysBack ?? 0);
     const forward = Math.max(0, daysForward ?? 0);
 
@@ -307,7 +329,7 @@ export class StrategyExecutor {
    * rejects a `Point`, and every row sharing `[0, 0]` is useless on a map.
    */
   private buildGeometry(geometryType: string, bbox?: Bbox): unknown {
-    const [minLng, minLat, maxLng, maxLat] = bbox ?? ([-122.6, 37.5, -122.2, 37.9] as Bbox);
+    const [minLng, minLat, maxLng, maxLat] = clampBbox(bbox ?? ([-122.6, 37.5, -122.2, 37.9] as Bbox));
     const lng = () => this.rng.float(minLng, maxLng, 6);
     const lat = () => this.rng.float(minLat, maxLat, 6);
     const point = (): [number, number] => [lng(), lat()];
@@ -408,6 +430,17 @@ export class StrategyExecutor {
     this.pendingItemPools.set(collection, promise);
     return promise;
   }
+}
+
+/** Keep generated coordinates inside real longitude/latitude ranges. */
+function clampBbox(bbox: Bbox): Bbox {
+  const lng = (value: number) => Math.min(180, Math.max(-180, Number.isFinite(value) ? value : 0));
+  const lat = (value: number) => Math.min(90, Math.max(-90, Number.isFinite(value) ? value : 0));
+  const minLng = lng(bbox[0]);
+  const minLat = lat(bbox[1]);
+  const maxLng = lng(bbox[2]);
+  const maxLat = lat(bbox[3]);
+  return [Math.min(minLng, maxLng), Math.min(minLat, maxLat), Math.max(minLng, maxLng), Math.max(minLat, maxLat)];
 }
 
 function ring(point: () => [number, number], vertices: number): Array<[number, number]> {

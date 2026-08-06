@@ -15,6 +15,9 @@ import type { FieldConstraints } from './types.js';
 
 export type FilterAst = Record<string, any>;
 
+/** Upper bound on the text a stored `_regex` rule is tested against. */
+const MAX_REGEX_SUBJECT = 10_000;
+
 /** Collect constraints for `fieldName` out of a validation AST. */
 export function compileConstraints(ast: FilterAst | null | undefined, fieldName: string): FieldConstraints {
   const out: FieldConstraints = {};
@@ -207,7 +210,10 @@ function fieldMatches(actual: unknown, ops: Record<string, unknown>): boolean {
       case '_regex':
         if (typeof expected === 'string') {
           try {
-            if (!new RegExp(expected).test(String(actual ?? ''))) return false;
+            // Stored patterns can backtrack catastrophically. Bounding the input
+            // keeps a pathological rule from hanging a whole run on one row.
+            const subject = String(actual ?? '').slice(0, MAX_REGEX_SUBJECT);
+            if (!new RegExp(expected).test(subject)) return false;
           } catch {
             // An invalid stored pattern must not fail the row.
           }

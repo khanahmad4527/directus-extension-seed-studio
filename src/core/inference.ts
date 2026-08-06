@@ -52,16 +52,24 @@ export async function profileCollection(
   }
 
   const fieldNames = candidates.map((f) => f.field);
-  let rows: Record<string, unknown>[] = [];
-  try {
-    rows = await ds.sample(descriptor.collection, fieldNames, sampleSize);
-  } catch {
-    rows = [];
-  }
+  const { rows, unreadable } = await sampleTolerant(ds, descriptor.collection, fieldNames, sampleSize);
 
   const profiles: FieldProfile[] = [];
 
   for (const field of candidates) {
+    // A column we could not read tells us nothing. Reporting it as "100% empty"
+    // would suggest always leaving it blank, on the strength of a failed query.
+    if (unreadable.has(field.field)) {
+      profiles.push({
+        field: field.field,
+        nullRate: 0,
+        sampleSize: 0,
+        confidence: 'low',
+        note: 'Could not be read from the database, so nothing was inferred for it.',
+      });
+      continue;
+    }
+
     const values = rows.map((row) => row[field.field]);
     const nonNull = values.filter((v) => v !== null && v !== undefined && v !== '');
     const nullRate = values.length > 0 ? 1 - nonNull.length / values.length : 0;
@@ -196,6 +204,47 @@ export async function profileCollection(
   }
 
   return { collection: descriptor.collection, sampleSize: rows.length, profiles };
+}
+
+/**
+ * Read a sample without letting one unreadable column silence the whole pass.
+ *
+ * A single field can fail the query for reasons that have nothing to do with the
+ * others — a geometry column on a database with no spatial functions, a field
+ * the role cannot read. Falling back to per-field reads costs extra queries only
+ * in that degraded case, and profiles everything that *is* readable.
+ */
+async function sampleTolerant(
+  ds: SeedDataSource,
+  collection: string,
+  fields: string[],
+  limit: number
+): Promise<{ rows: Record<string, unknown>[]; unreadable: Set<string> }> {
+  const unreadable = new Set<string>();
+  if (fields.length === 0) return { rows: [], unreadable };
+
+  try {
+    const rows = await ds.sample(collection, fields, limit);
+    // An empty result from a collection that has rows means the read did not
+    // really succeed — some adapters answer an error with an empty list rather
+    // than throwing. Fall through and find out which column is at fault.
+    if (rows.length > 0) return { rows, unreadable };
+  } catch {
+    // fall through to per-field reads
+  }
+
+  const merged: Record<string, unknown>[] = [];
+  for (const field of fields) {
+    try {
+      const rows = await ds.sample(collection, [field], limit);
+      rows.forEach((row, index) => {
+        merged[index] = { ...(merged[index] ?? {}), ...row };
+      });
+    } catch {
+      unreadable.add(field);
+    }
+  }
+  return { rows: merged, unreadable };
 }
 
 function withNullRate(

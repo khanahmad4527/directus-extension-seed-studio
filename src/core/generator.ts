@@ -1,6 +1,12 @@
 import { applyConditions, conditionDependencies } from './conditions.js';
 import { resolveInsertOptions, type SeedDataSource } from './data-source.js';
 import { applyInvariants, type InvariantChange } from './invariants.js';
+import {
+  isUnsafeFieldName,
+  LIMITS,
+  validateRowCount,
+  validateStrategyMap,
+} from './request-validation.js';
 import type { Rng } from './rng.js';
 import { buildCollectionDescriptor } from './schema-model.js';
 import { StrategyExecutor } from './strategy-executor.js';
@@ -43,6 +49,8 @@ export interface GenerationResult {
   junctionRowsWritten: number;
   durationMs: number;
   seed: number;
+  /** The "now" this run generated against — pass it back with the seed to replay. */
+  now: string;
   /** Primary keys we created, so the run can be undone. */
   createdIds: PrimaryKey[];
   /** True when the id list was capped and undo can only be partial. */
@@ -54,6 +62,8 @@ export interface GenerationResult {
 /** Hard cap on remembered ids — enough to undo a large run without unbounded memory. */
 const UNDO_ID_LIMIT = 100_000;
 const MAX_PREVIEW_ROWS = 50;
+/** Junction rows are parents × links; cap the product so a batch cannot blow memory. */
+const MAX_JUNCTION_ROWS_PER_BATCH = 100_000;
 
 export async function runGeneration(
   request: GenerationRequest,
@@ -66,6 +76,9 @@ export async function runGeneration(
   const totalBatches = Math.max(1, Math.ceil(total / batchSize));
   const warnings: string[] = [];
 
+  validateStrategyMap(request.strategies);
+  validateRowCount(request.count);
+
   const descriptor = await buildCollectionDescriptor(ctx.ds, request.collection, {
     detect: detectOptionsFrom(options),
   });
@@ -74,7 +87,8 @@ export async function runGeneration(
   assertWipeConfirmed(request, descriptor);
   validateStrategies(descriptor, request.strategies);
 
-  const executor = new StrategyExecutor(ctx.ds, ctx.rng, { preloadUnique: true });
+  const nowMs = resolveNow(options);
+  const executor = new StrategyExecutor(ctx.ds, ctx.rng, { preloadUnique: true, now: nowMs });
   await executor.prepare(request.strategies, descriptor);
   await assertReferencesReady(descriptor, request.strategies, executor);
 
@@ -145,11 +159,19 @@ export async function runGeneration(
     elapsedMs: durationMs,
   });
 
+  const failures = executor.failureCount;
+  if (failures > 0) {
+    warnings.push(
+      `${failures} field value${failures === 1 ? '' : 's'} could not be generated and were written as empty. Check the strategies for this collection.`
+    );
+  }
+
   return {
     rowsWritten,
     junctionRowsWritten,
     durationMs,
     seed: ctx.rng.baseSeed,
+    now: new Date(nowMs).toISOString(),
     createdIds,
     createdIdsTruncated,
     warnings,
@@ -173,6 +195,7 @@ export async function runPreview(
   request: PreviewRequest,
   ctx: GenerationContext
 ): Promise<PreviewOutcome> {
+  validateStrategyMap(request.strategies);
   const options = request.options ?? {};
   const count = Math.min(Math.max(1, request.count ?? 10), MAX_PREVIEW_ROWS);
 
@@ -181,7 +204,8 @@ export async function runPreview(
   });
   assertNotSingleton(descriptor);
 
-  const executor = new StrategyExecutor(ctx.ds, ctx.rng, { preloadUnique: false });
+  const nowMs = resolveNow(options);
+  const executor = new StrategyExecutor(ctx.ds, ctx.rng, { preloadUnique: false, now: nowMs });
   await executor.prepare(request.strategies, descriptor);
 
   const built = await buildRows(descriptor, request.strategies, executor, 0, count, options);
@@ -196,6 +220,7 @@ export async function runPreview(
     issues,
     changes: built.changes,
     seed: ctx.rng.baseSeed,
+    now: new Date(nowMs).toISOString(),
     descriptor,
   };
 }
@@ -227,6 +252,9 @@ async function buildRows(
 
     for (const field of ordered) {
       if (field.isAlias || field.isSystemField || field.readonly) continue;
+      // A column literally named `__proto__` would mutate the row's prototype
+      // instead of adding a value. Nothing good comes of writing it.
+      if (isUnsafeFieldName(field.field)) continue;
       const strategy: GenerationStrategy | undefined = strategies[field.field] ?? field.suggestedStrategy;
       if (!strategy) continue;
       if (strategy.kind === 'system' || strategy.kind === 'skip' || strategy.kind === 'm2m_random') continue;
@@ -289,8 +317,12 @@ async function writeJunctionRows(
       // Zipf-ish: most parents get few links, some get many.
       const skew = ctx.rng.float(0, 1, 4);
       const span = Math.max(0, strategy.max - strategy.min);
-      const links = strategy.min + Math.floor(span * Math.pow(skew, 2));
+      const links = Math.min(
+        LIMITS.maxM2mLinks,
+        strategy.min + Math.floor(span * Math.pow(skew, 2))
+      );
       if (links <= 0) continue;
+      if (junctionRows.length >= MAX_JUNCTION_ROWS_PER_BATCH) break;
       for (const relatedKey of ctx.rng.pickSome(pool, links)) {
         junctionRows.push({
           [relation.junctionParentField]: parentKey,
@@ -358,6 +390,18 @@ export function orderFieldsByDependency(
 
   for (const field of fields) visit(field.field);
   return out;
+}
+
+/**
+ * A run's "now". Relative dates hang off it, so it is fixed once per run and
+ * reported back: seed alone cannot reproduce a run whose dates move with the clock.
+ */
+function resolveNow(options: RunOptions): number {
+  if (options.now) {
+    const parsed = Date.parse(options.now);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
 }
 
 function detectOptionsFrom(options: RunOptions) {

@@ -172,11 +172,15 @@ export class ItemsServiceDataSource implements SeedDataSource {
   }
 
   async groupCount(collection: string, field: string, limit: number): Promise<GroupCount[]> {
+    // The REST parameter is `groupBy`, but the internal Query field is `group`
+    // (see `sanitizeQuery`). Passing `groupBy` here is silently ignored, which
+    // returns ungrouped rows and makes value-frequency profiling look like
+    // "not enough signal". Sorting happens below rather than in SQL, because
+    // ordering by an aggregate alias is not accepted on this path.
     const rows = (await this.items(collection).readByQuery({
       aggregate: { count: ['*'] },
-      groupBy: [field],
+      group: [field],
       limit,
-      sort: ['-count'],
     })) as any[];
     return rows
       .map((row) => ({

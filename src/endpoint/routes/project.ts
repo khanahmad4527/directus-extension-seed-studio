@@ -1,5 +1,6 @@
 import type { ResponseLike, Router } from '../express-types.js';
 import { planProject, runProject } from '../../core/project.js';
+import { LIMITS, truncateMessage } from '../../core/request-validation.js';
 import { buildEngine, sanitiseOptions, type RouteDeps } from '../engine-context.js';
 import { wrapLogger } from '../logger.js';
 import { sseBus } from '../progress/sse-bus.js';
@@ -16,6 +17,11 @@ export function registerProjectRoutes(router: Router, deps: RouteDeps): void {
       const collections = Array.isArray(body.collections) ? body.collections.filter((c: any) => typeof c === 'string') : [];
       if (collections.length === 0) {
         return res.status(400).json({ error: 'collections must be a non-empty array' });
+      }
+      if (collections.length > LIMITS.maxCollectionsPerProject) {
+        return res.status(400).json({
+          error: `A project run is capped at ${LIMITS.maxCollectionsPerProject} collections`,
+        });
       }
 
       const engine = await buildEngine(req, deps);
@@ -36,6 +42,11 @@ export function registerProjectRoutes(router: Router, deps: RouteDeps): void {
       const collections = Array.isArray(body.collections) ? body.collections.filter((c: any) => typeof c === 'string') : [];
       if (collections.length === 0) {
         return res.status(400).json({ error: 'collections must be a non-empty array' });
+      }
+      if (collections.length > LIMITS.maxCollectionsPerProject) {
+        return res.status(400).json({
+          error: `A project run is capped at ${LIMITS.maxCollectionsPerProject} collections`,
+        });
       }
 
       const options = sanitiseOptions(body.options);
@@ -84,7 +95,7 @@ export function registerProjectRoutes(router: Router, deps: RouteDeps): void {
           });
         })
         .catch((err: any) => {
-          sseBus.emit(runId, { runId, type: 'error', message: err?.message ?? String(err) });
+          sseBus.emit(runId, { runId, type: 'error', message: truncateMessage(err?.message ?? String(err)) });
         })
         .finally(() => runRegistry.finish(runId));
 

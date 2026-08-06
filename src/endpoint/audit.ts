@@ -28,6 +28,9 @@ function runsSpec(): CollectionSpec {
       note: 'Seed Studio · Generation history',
       hidden: false,
       singleton: false,
+      // A log collection does not need a revision per status update; activity
+      // alone records who ran what, without doubling the bookkeeping.
+      accountability: 'activity',
       sort_field: 'started_at',
       display_template: '{{collection}} — {{status}} ({{row_count_written}} rows)',
       archive_field: 'status',

@@ -1,3 +1,4 @@
+import { assertSafePattern } from './rng.js';
 import type {
   Bbox,
   FieldConstraints,
@@ -5,6 +6,20 @@ import type {
   RelationDescriptor,
   WeightedChoice,
 } from './types.js';
+
+/**
+ * A stored validation rule can be anything an admin typed. If we cannot safely
+ * generate from it, fall through to the normal heuristics rather than suggest a
+ * strategy that throws on every row.
+ */
+function isUsablePattern(pattern: string): boolean {
+  try {
+    assertSafePattern(pattern);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const AUTO_MANAGED_SPECIALS = new Set([
   'uuid',
@@ -220,7 +235,7 @@ export function detectField(ctx: DetectContext): DetectResult {
       reason: 'Restricted by a validation rule on this field',
     };
   }
-  if (constraints?.regex) {
+  if (constraints?.regex && isUsablePattern(constraints.regex)) {
     return {
       strategy: { kind: 'regex', pattern: constraints.regex },
       reason: 'Matches the field validation pattern',

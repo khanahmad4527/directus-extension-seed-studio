@@ -118,8 +118,18 @@ export class FakeDataSource implements SeedDataSource {
       .slice(0, limit);
   }
 
-  async sample(collection: string, _fields: string[], limit: number): Promise<Record<string, unknown>[]> {
-    return (this.rows[collection] ?? []).slice(0, limit);
+  async sample(collection: string, fields: string[], limit: number): Promise<Record<string, unknown>[]> {
+    const rows = (this.rows[collection] ?? []).slice(0, limit);
+    // Directus returns only the requested fields; a double that returns whole
+    // rows hides bugs in code that relies on the projection.
+    if (fields.length === 0 || fields.includes('*')) return rows;
+    return rows.map((row) => {
+      const projected: Record<string, unknown> = {};
+      for (const field of fields) {
+        if (field in row) projected[field] = row[field];
+      }
+      return projected;
+    });
   }
 
   async groupCount(collection: string, field: string, limit: number): Promise<GroupCount[]> {

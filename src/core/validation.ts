@@ -196,11 +196,15 @@ export function postProcessValue(
   return v;
 }
 
+/** A `{000…}` placeholder wide enough to be a memory attack is not a format. */
+const MAX_SEQUENCE_PAD = 40;
+
 export function formatSequence(pattern: string, rowIndex: number, startFrom: number = 0): string {
   const number = startFrom + rowIndex;
-  return pattern
+  return String(pattern ?? '')
+    .slice(0, 200)
     .replace(/\{(0+)\}/g, (_match, zeros: string) => {
-      const width = zeros.length;
+      const width = Math.min(zeros.length, MAX_SEQUENCE_PAD);
       return String(number).padStart(width, '0');
     })
     .replace(/\{uuid\}/g, () => globalThis.crypto.randomUUID());

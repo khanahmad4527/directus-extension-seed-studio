@@ -458,21 +458,50 @@ export function createRowEntity(rng: Rng, ctx: RowEntityContext): RowEntity {
   return { flavor, person, contact, company, location, content, commerce, time };
 }
 
-/** Read a dotted trait path (`person.firstName`) out of an entity. */
+const TRAIT_SEGMENT = /^[a-zA-Z][a-zA-Z0-9]*$/;
+
+/**
+ * `constructor` and friends satisfy the segment pattern, so they have to be
+ * named explicitly — otherwise `coherent: person.constructor` passes validation
+ * and only fails silently at generation time.
+ */
+const BLOCKED_TRAIT_KEYS = new Set([
+  'constructor',
+  'prototype',
+  'toString',
+  'toLocaleString',
+  'valueOf',
+  'hasOwnProperty',
+  'isPrototypeOf',
+  'propertyIsEnumerable',
+]);
+
+/**
+ * Read a dotted trait path (`person.firstName`) out of an entity.
+ *
+ * Trait strings arrive in request bodies, so the walk is restricted to exactly
+ * `<namespace>.<trait>` with word-shaped segments: no prototype hops, no
+ * arbitrary depth, and only the namespaces the entity actually defines.
+ */
 export function readTrait(entity: RowEntity, trait: string): unknown {
-  const parts = trait.split('.');
-  let cursor: any = entity;
-  for (const part of parts) {
-    if (cursor === null || cursor === undefined) return null;
-    if (!Object.prototype.hasOwnProperty.call(cursor, part) && !(part in cursor)) return null;
-    cursor = cursor[part];
-  }
-  return cursor ?? null;
+  if (!isEntityPath(trait)) return null;
+  const [namespace, key] = String(trait).split('.') as [string, string];
+  const scope = (entity as any)[namespace];
+  if (!scope || typeof scope !== 'object') return null;
+  if (!(key in scope)) return null;
+  const value = scope[key];
+  if (typeof value === 'function') return null;
+  return value ?? null;
 }
 
 export function isEntityPath(path: string): boolean {
-  const head = path.split('.')[0] ?? '';
-  return ENTITY_NAMESPACES.includes(head);
+  if (typeof path !== 'string') return false;
+  const parts = path.split('.');
+  if (parts.length !== 2) return false;
+  const [namespace, key] = parts as [string, string];
+  if (!ENTITY_NAMESPACES.includes(namespace)) return false;
+  if (BLOCKED_TRAIT_KEYS.has(key)) return false;
+  return TRAIT_SEGMENT.test(key);
 }
 
 /**

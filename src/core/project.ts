@@ -165,6 +165,29 @@ export async function runProject(
 
     const wipe = Boolean(request.wipeFirst && request.confirmWipe?.includes(collection));
 
+    // A child run emits its own `start`/`complete`. Forwarded as-is, the very
+    // first collection's `complete` closes the progress stream and the rest of
+    // the project appears to never run. Re-label them as phase updates so only
+    // the project's own terminal event ends the stream.
+    const childCtx: GenerationContext = {
+      ...ctx,
+      onProgress: (event) => {
+        if (event.type === 'start' || event.type === 'complete' || event.type === 'cancelled') {
+          ctx.onProgress?.({
+            ...event,
+            type: 'phase',
+            phase: collection,
+            message:
+              event.type === 'complete'
+                ? `${collection}: ${event.rowsWritten ?? 0} rows`
+                : `${collection}: ${event.type}`,
+          });
+          return;
+        }
+        ctx.onProgress?.({ ...event, phase: collection });
+      },
+    };
+
     try {
       const result = await runGeneration(
         {
@@ -175,7 +198,7 @@ export async function runProject(
           confirm: wipe ? collection : undefined,
           options: request.options,
         },
-        ctx
+        childCtx
       );
       totalRows += result.rowsWritten;
       results.push({

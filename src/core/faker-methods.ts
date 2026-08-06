@@ -126,12 +126,37 @@ export const FAKER_MODULES = new Set([
 
 const SAFE_SEGMENT = /^[a-z][A-Za-z0-9]*$/;
 
+/**
+ * Members every object inherits. They match the "looks like a method" pattern,
+ * so without an explicit block `person.constructor` resolves to the module class
+ * and `lorem.toString` to a stray function. Neither is exploitable on its own —
+ * paths are capped at two segments, so `constructor.constructor` is unreachable —
+ * but a strategy arriving over HTTP has no business addressing them.
+ */
+const BLOCKED_MEMBERS = new Set([
+  'constructor',
+  'prototype',
+  'toString',
+  'toLocaleString',
+  'valueOf',
+  'hasOwnProperty',
+  'isPrototypeOf',
+  'propertyIsEnumerable',
+  'call',
+  'apply',
+  'bind',
+  'seed',
+  'definitions',
+  'rawDefinitions',
+]);
+
 export function isValidFakerPath(path: string): boolean {
   if (typeof path !== 'string') return false;
   const parts = path.split('.');
   if (parts.length !== 2) return false;
   const [moduleName, method] = parts as [string, string];
   if (!FAKER_MODULES.has(moduleName)) return false;
+  if (BLOCKED_MEMBERS.has(method)) return false;
   return SAFE_SEGMENT.test(method);
 }
 
@@ -150,6 +175,10 @@ export function resolveFakerCallable(
   }
   const fn = mod[method];
   if (typeof fn !== 'function') {
+    throw new Error(`Faker method not callable: ${path}`);
+  }
+  // Belt and braces: never hand back a constructor, however it was reached.
+  if (fn === Function || fn === Object || fn.prototype?.constructor === fn && /^class\s/.test(Function.prototype.toString.call(fn))) {
     throw new Error(`Faker method not callable: ${path}`);
   }
   return fn.bind(mod);

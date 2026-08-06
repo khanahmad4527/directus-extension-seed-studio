@@ -162,6 +162,15 @@ export type StrategyMap = Record<string, GenerationStrategy>;
 export interface RunOptions {
   /** Base seed — same seed + same strategies + same schema ⇒ identical rows. */
   seed?: number | null;
+  /**
+   * The instant the run treats as "now", as an ISO string.
+   *
+   * Generated dates are relative to it ("in the last 90 days"), so the seed
+   * alone cannot reproduce a run — two runs a minute apart would drift. Every
+   * run reports the anchor it used; pass it back with the same seed to get the
+   * same rows. Defaults to the moment the run starts.
+   */
+  now?: string | null;
   /** Faker locale code, e.g. `de`, `ja`, `pt_BR`. Requires the API engine. */
   locale?: string | null;
   /** Derive related fields (name/email/city/...) from one entity per row. */
@@ -210,6 +219,8 @@ export interface PreviewResult {
   /** Rows that Directus would reject, found without writing anything. */
   issues: RowIssue[];
   seed: number;
+  /** The "now" these rows were generated against — replay needs it. */
+  now: string;
 }
 
 export interface ProgressEvent {

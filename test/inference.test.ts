@@ -122,3 +122,35 @@ describe('inferPattern', () => {
     assert.equal(inferPattern(['AB-1000', 'AB-1001']), null);
   });
 });
+
+describe('profiling survives an unreadable column', () => {
+  it('falls back to per-field reads instead of returning nothing', async () => {
+    const rows = Array.from({ length: 20 }, (_, i) => ({
+      id: i,
+      status: i % 2 === 0 ? 'paid' : 'refunded',
+      total: i,
+      reference: `AB-${1000 + i}`,
+      note: 'n',
+    }));
+    const ds = withRows(rows);
+
+    // One column throws — a geometry field on a database with no spatial
+    // functions behaves exactly like this.
+    const original = ds.sample.bind(ds);
+    ds.sample = async (collection, fields, limit) => {
+      if (fields.includes('reference')) throw new Error('no such function: st_asgeojson');
+      return original(collection, fields, limit);
+    };
+
+    const descriptor = await buildCollectionDescriptor(ds, 'orders');
+    const result = await profileCollection(ds, descriptor, 300);
+
+    assert.ok(result.sampleSize > 0, 'the readable columns should still be sampled');
+    const status = result.profiles.find((p) => p.field === 'status');
+    assert.equal(status?.suggested?.kind, 'weighted_choice');
+    const reference = result.profiles.find((p) => p.field === 'reference');
+    assert.equal(reference?.suggested, undefined, 'the unreadable column yields no suggestion');
+    assert.match(reference?.note ?? '', /could not be read/i);
+    assert.equal(reference?.nullRate, 0, 'an unread column must not look "always empty"');
+  });
+});

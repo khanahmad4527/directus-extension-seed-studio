@@ -61,41 +61,61 @@ export function useSeedApi() {
     return { ds: localDataSource(), rng: createRng(createAppFaker(), seed), seed };
   }
 
-  /** Probed once per page load; both engines share the same code path afterwards. */
+  /**
+   * Probed once, then reused — but only a definitive answer is cached.
+   *
+   * A 404 means the API extension genuinely is not installed; a 502/503 means
+   * the server was restarting. Caching the latter would strand the whole session
+   * in the reduced in-browser engine until the page is reloaded, so transient
+   * failures fall back for this call and re-probe on the next one.
+   */
   async function status(): Promise<EngineStatus> {
-    if (!engineProbe) {
-      engineProbe = (async (): Promise<EngineStatus> => {
-        try {
-          const response = await api.get(`${BASE}/capabilities`);
-          const data = response?.data ?? {};
-          if (data?.capabilities) {
-            return {
+    if (engineProbe) return engineProbe;
+
+    const probe = (async (): Promise<{ status: EngineStatus; definitive: boolean }> => {
+      try {
+        const response = await api.get(`${BASE}/capabilities`);
+        const data = response?.data ?? {};
+        if (data?.capabilities) {
+          return {
+            definitive: true,
+            status: {
               engine: 'api',
               capabilities: data.capabilities,
               locales: Array.isArray(data.locales) ? data.locales : APP_LOCALES,
               environment: data.environment,
-            };
-          }
-          throw new Error('Unexpected capabilities response');
-        } catch (err: any) {
-          const ds = localDataSource();
-          const environment = await ds.environment();
-          return {
+            },
+          };
+        }
+        throw new Error('Unexpected capabilities response');
+      } catch (err: any) {
+        const httpStatus = err?.response?.status;
+        const ds = localDataSource();
+        const environment = await ds.environment().catch(() => undefined);
+        return {
+          // 404/403 are answers. Anything else might just be a restart.
+          definitive: httpStatus === 404 || httpStatus === 403,
+          status: {
             engine: 'app',
             capabilities: ds.capabilities,
             locales: APP_LOCALES,
             fallbackReason:
-              err?.response?.status === 404
+              httpStatus === 404
                 ? 'The Seed Studio API extension is not installed, so generation runs in this browser tab.'
                 : `The Seed Studio API extension did not respond (${
-                    err?.response?.status ?? err?.message ?? 'unknown error'
+                    httpStatus ?? err?.message ?? 'unknown error'
                   }), so generation runs in this browser tab.`,
             environment,
-          };
-        }
-      })();
+          },
+        };
+      }
+    })();
+
+    const result = await probe;
+    if (result.definitive) {
+      engineProbe = Promise.resolve(result.status);
     }
-    return engineProbe;
+    return result.status;
   }
 
   async function isApi(): Promise<boolean> {

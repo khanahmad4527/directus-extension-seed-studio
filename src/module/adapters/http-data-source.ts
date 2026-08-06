@@ -43,9 +43,17 @@ export class HttpDataSource implements SeedDataSource {
 
   constructor(private api: any) {}
 
-  /** Directus exposes system collections on their own REST paths. */
+  /**
+   * Directus exposes system collections on their own REST paths.
+   *
+   * The name is encoded: it reaches here from a request body or a picker, and an
+   * unencoded `../` or `?` would rewrite the URL into a different endpoint.
+   */
   private endpoint(collection: string): string {
-    return collection.startsWith('directus_') ? `/${collection.slice(9)}` : `/items/${collection}`;
+    const name = String(collection ?? '');
+    return name.startsWith('directus_')
+      ? `/${encodeURIComponent(name.slice(9))}`
+      : `/items/${encodeURIComponent(name)}`;
   }
 
   private async get(url: string, params?: Record<string, unknown>): Promise<any> {
@@ -53,9 +61,19 @@ export class HttpDataSource implements SeedDataSource {
     return response?.data?.data ?? response?.data ?? null;
   }
 
+  /**
+   * Directus answers list endpoints with an array, but an error body is an
+   * object. Callers iterate what comes back, so anything that is not a list is
+   * normalised here rather than exploding three frames away.
+   */
+  private async getList(url: string, params?: Record<string, unknown>): Promise<any[]> {
+    const payload = await this.get(url, params);
+    return Array.isArray(payload) ? payload : [];
+  }
+
   async listCollections(): Promise<RawCollection[]> {
     if (this.listCache) return this.listCache;
-    const rows = (await this.get('/collections')) as any[];
+    const rows = await this.getList('/collections');
     // Deliberately not seeded into `collectionCache`: `/collections` does not
     // report the primary key, and a cached `id` guess would then be used for
     // inserts and foreign-key pools on collections keyed by something else.
@@ -87,14 +105,14 @@ export class HttpDataSource implements SeedDataSource {
   async getFields(collection: string): Promise<RawField[]> {
     const cached = this.fieldsCache.get(collection);
     if (cached) return cached;
-    const rows = ((await this.get(`/fields/${encodeURIComponent(collection)}`)) ?? []) as RawField[];
+    const rows = (await this.getList(`/fields/${encodeURIComponent(collection)}`)) as RawField[];
     this.fieldsCache.set(collection, rows);
     return rows;
   }
 
   async getRelations(): Promise<RawRelation[]> {
     if (this.relationsCache) return this.relationsCache;
-    this.relationsCache = ((await this.get('/relations')) ?? []) as RawRelation[];
+    this.relationsCache = (await this.getList('/relations')) as RawRelation[];
     return this.relationsCache;
   }
 
@@ -116,11 +134,11 @@ export class HttpDataSource implements SeedDataSource {
     let page = 1;
 
     while (values.length < limit) {
-      const rows = ((await this.get(this.endpoint(collection), {
+      const rows = await this.getList(this.endpoint(collection), {
         fields: field,
         limit: pageSize,
         page,
-      })) ?? []) as any[];
+      });
       if (rows.length === 0) break;
       for (const row of rows) {
         const value = row?.[field];
@@ -135,31 +153,30 @@ export class HttpDataSource implements SeedDataSource {
   }
 
   async sample(collection: string, fields: string[], limit: number): Promise<Record<string, unknown>[]> {
-    const rows = ((await this.get(this.endpoint(collection), {
+    return (await this.getList(this.endpoint(collection), {
       fields: fields.length > 0 ? fields.join(',') : '*',
       limit: Math.min(limit, 500),
-    })) ?? []) as Record<string, unknown>[];
-    return rows;
+    })) as Record<string, unknown>[];
   }
 
   async groupCount(collection: string, field: string, limit: number): Promise<GroupCount[]> {
-    const rows = ((await this.get(this.endpoint(collection), {
+    const rows = await this.getList(this.endpoint(collection), {
       'aggregate[count]': '*',
       groupBy: field,
       limit,
-    })) ?? []) as any[];
+    });
     return rows
       .map((row) => ({ value: row?.[field], count: Number(row?.count ?? 0) || 0 }))
       .sort((a, b) => b.count - a.count);
   }
 
   async numericStats(collection: string, field: string): Promise<NumericStats> {
-    const rows = ((await this.get(this.endpoint(collection), {
+    const rows = await this.getList(this.endpoint(collection), {
       'aggregate[min]': field,
       'aggregate[max]': field,
       'aggregate[avg]': field,
       'aggregate[count]': '*',
-    })) ?? []) as any[];
+    });
     const row = Array.isArray(rows) ? rows[0] : rows;
     return {
       min: toNumberOrNull(row?.min?.[field] ?? row?.min),
@@ -197,10 +214,22 @@ export class HttpDataSource implements SeedDataSource {
     const meta = await this.getCollection(collection);
     const pk = meta?.primary ?? 'id';
 
+    let lastSignature = '';
     for (let guard = 0; guard < 10_000; guard++) {
-      const rows = ((await this.get(this.endpoint(collection), { fields: pk, limit: 200 })) ?? []) as any[];
+      const rows = await this.getList(this.endpoint(collection), { fields: pk, limit: 200 });
       const keys = rows.map((row) => row?.[pk]).filter((key) => key !== undefined && key !== null);
       if (keys.length === 0) return;
+
+      // If the same page comes back twice, the deletes are being refused (a
+      // foreign key, a permission) and looping 10,000 times helps nobody.
+      const signature = keys.join(',');
+      if (signature === lastSignature) {
+        throw new Error(
+          `Wipe of "${collection}" stalled: the same ${keys.length} rows came back after deleting. Something is refusing the delete — check for foreign keys pointing at this collection.`
+        );
+      }
+      lastSignature = signature;
+
       await this.deleteByIds(collection, keys);
     }
     throw new Error(`Wipe of "${collection}" did not finish — too many rows to delete from the browser.`);
@@ -217,10 +246,10 @@ export class HttpDataSource implements SeedDataSource {
 
   async listFlows(): Promise<FlowInfo[]> {
     try {
-      const rows = ((await this.get('/flows', {
+      const rows = await this.getList('/flows', {
         fields: 'id,name,status,trigger,options',
         limit: 500,
-      })) ?? []) as any[];
+      });
       return rows.map((row) => {
         const options = row?.options ?? {};
         return {

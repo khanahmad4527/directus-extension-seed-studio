@@ -32,6 +32,37 @@ export interface Rng {
   fromRegExp(pattern: string): string;
 }
 
+/** Ceiling for a single generated string — see `assertSafePattern`. */
+export const MAX_GENERATED_LENGTH = 100_000;
+
+/** Largest repetition a pattern may ask for: `[a-z]{50000}` is a memory attack. */
+const MAX_PATTERN_REPEAT = 5_000;
+const MAX_PATTERN_LENGTH = 500;
+
+/**
+ * Patterns reach the engine from request bodies (a `regex` strategy) and from
+ * stored field metadata. `faker.helpers.fromRegExp` happily materialises whatever
+ * a quantifier asks for, so `[a-z]{1000000000}` is an out-of-memory switch.
+ * Reject the pattern rather than try to generate it.
+ */
+export function assertSafePattern(pattern: unknown): string {
+  const value = String(pattern ?? '');
+  if (value.length === 0) {
+    throw new Error('Empty pattern');
+  }
+  if (value.length > MAX_PATTERN_LENGTH) {
+    throw new Error(`Pattern is too long (${value.length} > ${MAX_PATTERN_LENGTH} characters)`);
+  }
+  for (const match of value.matchAll(/\{\s*(\d+)\s*(?:,\s*(\d+)\s*)?\}/g)) {
+    const low = Number(match[1] ?? 0);
+    const high = match[2] === undefined ? low : Number(match[2]);
+    if (low > MAX_PATTERN_REPEAT || high > MAX_PATTERN_REPEAT) {
+      throw new Error(`Pattern repeats too many times (max ${MAX_PATTERN_REPEAT})`);
+    }
+  }
+  return value;
+}
+
 /** 32-bit seed derived from a string — used when the caller has no numeric seed. */
 export function hashSeed(input: string): number {
   let h = 2166136261;
@@ -104,8 +135,9 @@ export function createRng(faker: FakerLike, baseSeed: number): Rng {
     fromRegExp(pattern: string) {
       // faker treats `^` and `$` as literal characters, so an anchored pattern
       // would generate "^INV-12345$". Anchors are implicit here anyway.
-      const unanchored = String(pattern).replace(/^\^/, '').replace(/\$$/, '');
-      return faker.helpers.fromRegExp(unanchored);
+      const unanchored = assertSafePattern(pattern).replace(/^\^/, '').replace(/\$$/, '');
+      const value = String(faker.helpers.fromRegExp(unanchored));
+      return value.length > MAX_GENERATED_LENGTH ? value.slice(0, MAX_GENERATED_LENGTH) : value;
     },
   };
 
