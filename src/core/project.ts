@@ -97,6 +97,15 @@ export interface ProjectRunRequest {
   wipeFirst?: boolean;
   /** Must list every collection to be wiped, mirroring the single-collection guard. */
   confirmWipe?: string[];
+  /**
+   * Called as each collection settles, successfully or not.
+   *
+   * A project run used to report per-collection failures only through the
+   * progress stream, so a run whose caller was not subscribed looked entirely
+   * clean while writing nothing. This hook is how the durable record gets
+   * written for each collection instead.
+   */
+  onCollectionResult?: (result: ProjectCollectionResult) => void | Promise<void>;
 }
 
 export interface ProjectCollectionResult {
@@ -106,6 +115,12 @@ export interface ProjectCollectionResult {
   junctionRowsWritten: number;
   durationMs: number;
   error?: string;
+  /** Primary keys written, so a project run is as undoable as a single run. */
+  createdIds: Array<string | number>;
+  createdIdsTruncated: boolean;
+  /** Strategies actually used, for the audit snapshot. */
+  strategies?: StrategyMap;
+  now?: string;
 }
 
 export interface ProjectRunResult {
@@ -124,6 +139,15 @@ export async function runProject(
   const results: ProjectCollectionResult[] = [];
   let totalRows = 0;
   let cancelled = false;
+
+  const report = async (result: ProjectCollectionResult): Promise<void> => {
+    results.push(result);
+    try {
+      await request.onCollectionResult?.(result);
+    } catch {
+      // Recording the outcome must never take down the run that produced it.
+    }
+  };
 
   for (const collection of request.plan.order) {
     if (ctx.token?.aborted) {
@@ -147,12 +171,14 @@ export async function runProject(
         },
       });
     } catch (err: any) {
-      results.push({
+      await report({
         collection,
         requested,
         rowsWritten: 0,
         junctionRowsWritten: 0,
         durationMs: 0,
+        createdIds: [],
+        createdIdsTruncated: false,
         error: err?.message ?? String(err),
       });
       continue;
@@ -201,12 +227,16 @@ export async function runProject(
         childCtx
       );
       totalRows += result.rowsWritten;
-      results.push({
+      await report({
         collection,
         requested,
         rowsWritten: result.rowsWritten,
         junctionRowsWritten: result.junctionRowsWritten,
         durationMs: result.durationMs,
+        createdIds: result.createdIds,
+        createdIdsTruncated: result.createdIdsTruncated,
+        strategies,
+        now: result.now,
       });
       if (result.cancelled) {
         cancelled = true;
@@ -214,12 +244,15 @@ export async function runProject(
       }
     } catch (err: any) {
       // Keep going: a failure in one collection should not discard the rest.
-      results.push({
+      await report({
         collection,
         requested,
         rowsWritten: 0,
         junctionRowsWritten: 0,
         durationMs: 0,
+        createdIds: [],
+        createdIdsTruncated: false,
+        strategies,
         error: err?.message ?? String(err),
       });
     }

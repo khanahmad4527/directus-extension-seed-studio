@@ -18,9 +18,10 @@ const die = (msg, err) => {
 async function waitForDirectus(maxAttempts = 60) {
   for (let i = 0; i < maxAttempts; i++) {
     try {
-      const res = await fetch(`${DIRECTUS_URL}/server/health`);
-      const body = await res.json().catch(() => ({}));
-      if (res.ok && body.status === 'ok') {
+      // /server/health is admin-only; probe the public /server/ping instead.
+      const res = await fetch(`${DIRECTUS_URL}/server/ping`);
+      const body = await res.text().catch(() => '');
+      if (res.ok && body.trim() === 'pong') {
         log('Directus is healthy.');
         return;
       }

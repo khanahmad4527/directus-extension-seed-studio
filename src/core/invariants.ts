@@ -1,3 +1,4 @@
+import { formatForColumnType } from './date-format.js';
 import type { FieldDescriptor } from './types.js';
 
 /**
@@ -175,11 +176,7 @@ function toDate(value: unknown): Date | null {
 
 /** Re-serialise a date to match how the field stores it. */
 function formatLike(date: Date, field?: FieldDescriptor): string {
-  const type = field?.type ?? 'dateTime';
-  if (type === 'date') return date.toISOString().slice(0, 10);
-  if (type === 'time') return date.toISOString().slice(11, 19);
-  if (type === 'dateTime') return date.toISOString().slice(0, 19);
-  return date.toISOString();
+  return formatForColumnType(date, field?.type ?? 'dateTime', field?.interface);
 }
 
 function decimalsOf(value: number): number {

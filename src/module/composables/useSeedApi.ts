@@ -3,6 +3,12 @@ import { runGeneration, runPreview, undoRun } from '../../core/generator.js';
 import { profileCollection } from '../../core/inference.js';
 import { collectionInsights, insightWarnings } from '../../core/insights.js';
 import { planProject, runProject } from '../../core/project.js';
+import { preflightDependencies, type PreflightResult } from '../../core/preflight.js';
+import {
+  classifySeedTarget,
+  isSeedStudioCollection,
+  isSystemCollection,
+} from '../../core/seed-targets.js';
 import { createRng, randomSeed } from '../../core/rng.js';
 import { buildCollectionDescriptor, resolveDisplayName } from '../../core/schema-model.js';
 import { FAKER_METHODS } from '../../core/faker-methods.js';
@@ -133,23 +139,47 @@ export function useSeedApi() {
 
       const ds = localDataSource();
       const collections = await ds.listCollections();
-      const visible = collections.filter((c) =>
-        c.collection.startsWith('directus_') ? showSystem : true
-      );
+      const visible = collections.filter((c) => {
+        if (isSeedStudioCollection(c.collection)) return false;
+        return isSystemCollection(c.collection) ? showSystem : true;
+      });
       const summaries = await Promise.all(
         visible.map(async (collection) => {
-          const fields = await ds.getFields(collection.collection).catch(() => []);
+          const name = collection.collection;
+          const fields = await ds.getFields(name).catch(() => []);
+          const verdict = classifySeedTarget(name);
           return {
-            collection: collection.collection,
-            displayName: resolveDisplayName(collection.collection, collection),
+            collection: name,
+            displayName: resolveDisplayName(name, collection),
             fieldCount: fields.length,
-            rowCount: await ds.count(collection.collection),
-            isSystem: collection.collection.startsWith('directus_'),
+            rowCount: verdict.seedable ? await ds.count(name) : 0,
+            isSystem: isSystemCollection(name),
             singleton: Boolean(collection.singleton),
+            seedable: verdict.seedable,
+            blockedReason: verdict.reason ?? null,
+            blockedCategory: verdict.category ?? null,
+            warning: verdict.warning ?? null,
           };
         })
       );
-      return summaries.sort((a, b) => a.collection.localeCompare(b.collection));
+      return summaries.sort((a, b) => {
+        if (a.seedable !== b.seedable) return a.seedable ? -1 : 1;
+        return a.collection.localeCompare(b.collection);
+      });
+    },
+
+    /**
+     * Which parents are missing before `collection` can be generated. Runs on
+     * whichever engine is active, so the browser fallback gives the same answer.
+     */
+     async preflight(collection: string, count: number): Promise<PreflightResult> {
+      if (await isApi()) {
+        const res = await api.get(`${BASE}/preflight/${encodeURIComponent(collection)}`, {
+          params: { count },
+        });
+        return res.data;
+      }
+      return preflightDependencies(localDataSource(), collection, count);
     },
 
     async getSchema(

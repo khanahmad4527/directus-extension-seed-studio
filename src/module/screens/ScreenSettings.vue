@@ -63,7 +63,7 @@
         </div>
         <p v-if="mode === 'wipe'" class="danger-hint">
           <v-icon name="warning" small />
-          <span>All existing rows in <code>{{ collection }}</code> will be permanently deleted.</span>
+          <span>All existing rows in {{ nameOf(collection) }} will be permanently deleted.</span>
         </p>
       </article>
 
@@ -164,6 +164,16 @@
       </article>
     </div>
 
+    <PrerequisitePanel
+      v-if="showPreflightPanel"
+      :preflight="preflight"
+      :collection="collection"
+      :count="count"
+      :running="generating"
+      @run="onRunWithPrerequisites"
+      @dismiss="dismissedPreflight = true"
+    />
+
     <div v-if="insightWarnings.length" class="banner banner-warning" role="status">
       <v-icon name="warning" />
       <div>
@@ -192,8 +202,13 @@
         <v-icon name="visibility" left small />
         Dry-run
       </v-button>
-      <v-button :loading="generating" @click="onGenerate">
-        <v-icon name="bolt" left small />
+      <v-button
+        :loading="generating"
+        :disabled="blockedByPrerequisites"
+        :title="blockedByPrerequisites ? blockedTitle : undefined"
+        @click="onGenerate"
+      >
+        <v-icon :name="blockedByPrerequisites ? 'block' : 'bolt'" left small />
         Generate
       </v-button>
     </footer>
@@ -207,10 +222,12 @@
         <v-card-text>
           <p>
             This will permanently delete <strong>every existing row</strong> in
-            <code>{{ collection }}</code> before generating new data.
+            <strong>{{ nameOf(collection) }}</strong> before generating new data.
             This cannot be undone.
           </p>
-          <p class="confirm-prompt">Type the collection name below to confirm:</p>
+          <p class="confirm-prompt">
+            Type <code>{{ collection }}</code> below to confirm:
+          </p>
           <v-input v-model="wipeConfirmText" :placeholder="collection" autofocus />
         </v-card-text>
         <v-card-actions>
@@ -236,7 +253,15 @@ defineOptions({ name: 'ScreenSettings' });
 
 import { computed, onMounted, ref, watch } from 'vue';
 import { useSeedApi } from '../composables/useSeedApi';
-import type { EngineCapabilities, PreviewResponse, RunOptions, StrategyMap } from '../types';
+import PrerequisitePanel from '../components/PrerequisitePanel.vue';
+import { useCollectionName } from '../composables/useCollectionName';
+import type {
+  EngineCapabilities,
+  PreflightResult,
+  PreviewResponse,
+  RunOptions,
+  StrategyMap,
+} from '../types';
 
 interface Props {
   collection: string;
@@ -250,6 +275,7 @@ const emit = defineEmits<{
   (e: 'preview-result', result: PreviewResponse): void;
 }>();
 
+const { nameOf } = useCollectionName();
 const api = useSeedApi();
 
 const quickPicks = [100, 500, 1000, 5000, 10000];
@@ -269,6 +295,10 @@ const seedText = ref('');
 const locale = ref<string | null>(null);
 const writeMode = ref<'safe' | 'fast'>('safe');
 
+const preflight = ref<PreflightResult | null>(null);
+/** Set when the user chose to proceed past a non-blocking preflight warning. */
+const dismissedPreflight = ref(false);
+
 const capabilities = ref<EngineCapabilities | null>(null);
 const localeItems = ref<Array<{ text: string; value: string }>>([{ text: 'en', value: 'en' }]);
 const insightWarnings = ref<string[]>([]);
@@ -283,6 +313,36 @@ watch(countText, (v) => {
 });
 
 const batchSize = computed(() => Math.max(1, parseInt(batchText.value, 10) || 500));
+
+/**
+ * A required relation with an empty parent is a guaranteed failure, so Generate
+ * is held closed until the prerequisites are dealt with. Nullable-but-empty
+ * relations only warn, and dismissing the panel clears them.
+ */
+const blockedByPrerequisites = computed(() => {
+  const result = preflight.value;
+  if (!result) return false;
+  return result.blocking.length > 0 || result.unresolvable.length > 0;
+});
+
+/**
+ * Blocking prerequisites are not dismissible — the run cannot succeed while
+ * they stand. A warnings-only preflight is advisory, so hiding it is the
+ * user's call and stays hidden until the prerequisites themselves change.
+ */
+const showPreflightPanel = computed(() => {
+  const result = preflight.value;
+  if (!result) return false;
+  if (result.blocking.length || result.unresolvable.length) return true;
+  return result.warnings.length > 0 && !dismissedPreflight.value;
+});
+
+const blockedTitle = computed(() => {
+  const result = preflight.value;
+  if (!result) return '';
+  const names = [...result.blocking, ...result.unresolvable].map((p) => p.collection);
+  return `Needs rows in ${[...new Set(names)].join(', ')} first`;
+});
 
 const runOptions = computed<RunOptions>(() => {
   const seed = parseInt(seedText.value, 10);
@@ -308,7 +368,7 @@ onMounted(async () => {
   // Fast write is the better default when the engine can actually do it, but the
   // safe default stays for small runs where flows firing is the point.
   if (!status.capabilities.fastWrite) writeMode.value = 'safe';
-  await loadInsights();
+  await Promise.all([loadInsights(), loadPreflight()]);
 });
 
 /**
@@ -324,10 +384,31 @@ async function loadInsights() {
   }
 }
 
+/**
+ * Which parent collections are empty. Depends on the row count only through the
+ * suggested prerequisite sizes, but it is cheap and keeps those in step.
+ */
+async function loadPreflight() {
+  try {
+    const result = await api.preflight(props.collection, count.value);
+    preflight.value = result;
+    // A dismissal applies to the warnings the user actually saw; once the
+    // prerequisites change, show the panel again.
+    if (result.blocking.length || result.unresolvable.length) dismissedPreflight.value = false;
+  } catch {
+    // Preflight is advisory. If it cannot run, fall through to the normal
+    // error path on generate rather than blocking a run that might succeed.
+    preflight.value = null;
+  }
+}
+
 let insightTimer: ReturnType<typeof setTimeout> | null = null;
 watch(count, () => {
   if (insightTimer) clearTimeout(insightTimer);
-  insightTimer = setTimeout(loadInsights, 400);
+  insightTimer = setTimeout(() => {
+    void loadInsights();
+    void loadPreflight();
+  }, 400);
 });
 
 async function onPreview() {
@@ -350,6 +431,10 @@ async function onPreview() {
 
 async function onGenerate() {
   error.value = null;
+  if (blockedByPrerequisites.value) {
+    dismissedPreflight.value = false;
+    return;
+  }
   if (mode.value === 'wipe') {
     wipeConfirmText.value = '';
     wipeConfirmOpen.value = true;
@@ -362,6 +447,35 @@ async function confirmWipeAndGenerate() {
   if (wipeConfirmText.value !== props.collection) return;
   wipeConfirmOpen.value = false;
   await runGeneration(true);
+}
+
+/**
+ * Seed the prerequisites and the target together. The project runner orders the
+ * collections from the relation graph, so parents are written before the
+ * children that point at them and the whole thing reports as one run.
+ */
+async function onRunWithPrerequisites(payload: {
+  collections: string[];
+  counts: Record<string, number>;
+}) {
+  error.value = null;
+  generating.value = true;
+  try {
+    const result = await api.runProject({
+      collections: payload.collections,
+      counts: payload.counts,
+      options: runOptions.value,
+      // Only the target's strategies were edited in this wizard; the
+      // prerequisites use detection, which is what the field screen would
+      // have shown for them anyway.
+      strategies: { [props.collection]: props.strategies },
+    });
+    emit('started', result.runId);
+  } catch (err: any) {
+    error.value = err?.response?.data?.error ?? err?.message ?? 'Project run failed';
+  } finally {
+    generating.value = false;
+  }
 }
 
 async function runGeneration(wipeFirst: boolean) {

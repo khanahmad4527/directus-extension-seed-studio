@@ -1,6 +1,7 @@
 import type { ResponseLike, Router } from '../express-types.js';
 import { runPreview } from '../../core/generator.js';
 import { truncateMessage } from '../../core/request-validation.js';
+import { classifySeedTarget } from '../../core/seed-targets.js';
 import { buildEngine, sanitiseOptions, type RouteDeps } from '../engine-context.js';
 import { wrapLogger } from '../logger.js';
 
@@ -18,6 +19,10 @@ export function registerPreviewRoute(router: Router, deps: RouteDeps): void {
       }
       if (!body.strategies || typeof body.strategies !== 'object') {
         return res.status(400).json({ error: 'strategies is required' });
+      }
+      const verdict = classifySeedTarget(body.collection);
+      if (!verdict.seedable) {
+        return res.status(400).json({ error: `"${body.collection}" cannot be seeded: ${verdict.reason}` });
       }
 
       const options = sanitiseOptions(body.options);

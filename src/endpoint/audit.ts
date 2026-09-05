@@ -26,7 +26,9 @@ function runsSpec(): CollectionSpec {
     meta: {
       icon: 'history',
       note: 'Seed Studio · Generation history',
-      hidden: false,
+      // Bookkeeping, not content: keep it out of the user's sidebar. Still
+      // reachable via Settings › Data Model for anyone who wants the raw rows.
+      hidden: true,
       singleton: false,
       // A log collection does not need a revision per status update; activity
       // alone records who ran what, without doubling the bookkeeping.
@@ -282,7 +284,7 @@ function presetsSpec(): CollectionSpec {
     meta: {
       icon: 'bookmark',
       note: 'Seed Studio · Saved strategy configurations',
-      hidden: false,
+      hidden: true,
       singleton: false,
       sort_field: 'name',
       display_template: '{{name}} · {{collection}}',
@@ -414,6 +416,11 @@ export async function ensureAuditCollections(
       const freshSchema = getSchema ? await getSchema() : schema;
       await ensureFields(new FieldsService({ schema: freshSchema, accountability: { admin: true } }), spec, logger);
     }
+    if (!created) {
+      // Earlier versions created these unhidden, so they sit in the content
+      // sidebar of every existing install. Hide them once, in place.
+      await ensureHidden(collectionsService, spec.name, logger);
+    }
   }
 }
 
@@ -445,6 +452,28 @@ async function ensureCollection(
     }
     logger?.error?.({ err: err?.message, collection: spec.name }, 'Seed Studio: audit collection create failed');
     throw new Error(`Failed to create audit collection ${spec.name}: ${err?.message ?? err}`);
+  }
+}
+
+/**
+ * Hide an existing bookkeeping collection. Runs once per boot and touches only
+ * `meta.hidden`, leaving any other collection metadata alone.
+ */
+async function ensureHidden(
+  collectionsService: any,
+  name: string,
+  logger?: Logger
+): Promise<void> {
+  try {
+    const current = await collectionsService.readOne(name);
+    if (current?.meta?.hidden === true) return;
+    await collectionsService.updateOne(name, { meta: { hidden: true } });
+    logger?.warn?.({ collection: name }, 'Seed Studio: hid bookkeeping collection from the sidebar');
+  } catch (err: any) {
+    logger?.warn?.(
+      { collection: name, err: err?.message },
+      'Seed Studio: could not hide bookkeeping collection'
+    );
   }
 }
 

@@ -1,6 +1,7 @@
 import type { ResponseLike, Router } from '../express-types.js';
 import { profileCollection } from '../../core/inference.js';
 import { buildCollectionDescriptor } from '../../core/schema-model.js';
+import { isSeedStudioCollection } from '../../core/seed-targets.js';
 import { buildEngine, type RouteDeps } from '../engine-context.js';
 
 /**
@@ -10,6 +11,9 @@ import { buildEngine, type RouteDeps } from '../engine-context.js';
 export function registerProfileRoute(router: Router, deps: RouteDeps): void {
   router.get('/profile/:collection', async (req: any, res: ResponseLike) => {
     try {
+      if (isSeedStudioCollection(req.params.collection)) {
+        return res.status(404).json({ error: 'Collection not found' });
+      }
       const engine = await buildEngine(req, deps);
       const sampleSize = Math.min(Math.max(parseInt(String(req.query.sample ?? '300'), 10) || 300, 20), 2000);
 

@@ -67,6 +67,23 @@ Toggle the **System** checkbox to also seed into Directus system collections (`d
 
 ![Including system collections](https://raw.githubusercontent.com/khanahmad4527/directus-extension-seed-studio/main/docs/screenshots/2-system.png)
 
+Not every system table is a legal target. Directus exposes all 33 of them through the same `ItemsService` as your own content, but most are the schema itself, auth state, or the migration ledger — Faker output there corrupts the instance rather than filling it. `directus_migrations` is the sharpest example: bogus rows convince Directus that migrations already ran, so the next upgrade silently skips them. Seed Studio therefore allowlists rather than blocklists:
+
+| | Collections | Why |
+|---|---|---|
+| **Seedable** | `users`, `files`, `folders`, `comments`, `notifications`, `activity`, `translations`, `dashboards`, `panels`, `presets`, `roles`, `flows`, `operations` | Genuinely hold data |
+| **Blocked — schema** | `collections`, `fields`, `relations`, `migrations`, `extensions`, `settings`, `revisions`, `versions` | The data model and its history |
+| **Blocked — security** | `sessions`, `access`, `permissions`, `policies`, `shares`, `oauth_*` | Credentials and access rules |
+| **Blocked — platform** | `deployments`, `deployment_projects`, `deployment_runs`, `webhooks` | Written by the platform, or fire real side effects |
+
+Blocked collections are shown in the grid rather than hidden, dimmed and unselectable with the reason spelled out — a deliberate refusal is more useful than an absence. Some seedable ones carry a caveat instead of a block: `directus_files` generates metadata with no bytes behind it, so previews 404, and `directus_activity` is an append-only audit log you cannot un-pollute.
+
+![Blocked system collections](https://raw.githubusercontent.com/khanahmad4527/directus-extension-seed-studio/main/docs/screenshots/2-system-blocked.png)
+
+An **unrecognised** `directus_*` table is blocked by default. New Directus releases add system collections, and failing closed means a new version cannot turn into a data-corruption bug before someone classifies it.
+
+Seed Studio's own `seed_studio_runs` and `seed_studio_presets` never appear at all, on any route: generating into them would forge the audit trail Undo reads back.
+
 ### 2 · Review strategies & save presets
 Every field is shown with its auto-detected strategy badge — color-coded by family (faker / relation / random / system / built). Edit per-field, skip, or save the whole map as a named preset for re-use.
 
@@ -76,6 +93,16 @@ Every field is shown with its auto-detected strategy badge — color-coded by fa
 Quick-pick row counts (100 / 500 / 1k / 5k / 10k), custom batch size, and append-vs-wipe mode with a typed confirmation dialog — plus realism toggles (coherent rows, invariants, realistic empties, conditional fields), the run seed and locale, and the write mode. Pre-flight warnings appear here: flows that would fire per row, revision volume, and parent collections that still need rows.
 
 ![Settings](https://raw.githubusercontent.com/khanahmad4527/directus-extension-seed-studio/main/docs/screenshots/4-settings.png)
+
+**Dependency preflight.** Seeding `comments` before `posts` cannot work: a required many-to-one has nothing to point at, and a nullable one quietly fills the column with nulls. Before you press Generate, Seed Studio walks the target's ancestry, counts rows in every parent, and reports what is missing:
+
+- A **required** parent with no rows blocks the run. Each one is listed with the field that demands it and an editable row count, defaulting to roughly five children per parent. Tick what to include and the whole thing runs as **one relation-ordered project run** — `authors → posts → comments`, parents always written first.
+- A **nullable** parent with no rows only warns, because the default answer for an optional relation is to leave it null. You can opt into filling it from the same panel.
+- A required parent that Seed Studio refuses to write to (a blocked system table) is reported as unresolvable, with the reason — nothing the panel offers can fix it, so it says so instead of pretending.
+
+The walk is transitive and deduplicated: it stops descending as soon as a parent already has rows, and a collection demanded by several fields (`posts.cover` and `authors.avatar` both need `directus_files`) appears once, since the decision belongs to the collection.
+
+![Dependency preflight](https://raw.githubusercontent.com/khanahmad4527/directus-extension-seed-studio/main/docs/screenshots/6-prerequisites.png)
 
 ### 4 · Live progress
 Server-Sent Events stream the live progress — rows written, current batch, elapsed time, ETA. Refresh-safe: leave the page mid-run, come back, the wizard auto-resumes.
@@ -184,7 +211,7 @@ This is not an `eval`. The only callables reachable from a template are faker mo
 
 ## Audit collections
 
-Seed Studio creates two collections on first use:
+Seed Studio creates two collections on first use. Both are created **hidden**, so they stay out of your content sidebar; an install from an earlier version is hidden in place on the next boot. They are still browsable under *Settings › Data Model* if you want the raw rows, and they are never offered as a seed target.
 
 ### `seed_studio_runs`
 
@@ -233,6 +260,7 @@ All routes are admin-only. Non-admins receive `403`.
 | `GET` | `/seed-studio/schema/:collection` | Schema + auto-strategies, each with its reason |
 | `GET` | `/seed-studio/insights/:collection?count=N` | Flows that would fire, revision volume, dependencies, production check |
 | `GET` | `/seed-studio/profile/:collection?sample=N` | Learn strategies from the rows already there |
+| `GET` | `/seed-studio/preflight/:collection?count=N` | Which parents are empty, and what to seed first |
 | `POST` | `/seed-studio/preview` | Dry run — rows, plus what Directus would reject |
 | `POST` | `/seed-studio/generate` | Start a generation run |
 | `POST` | `/seed-studio/generate/:runId/cancel` | Stop a running generation |
@@ -247,6 +275,33 @@ All routes are admin-only. Non-admins receive `403`.
 | `GET` | `/seed-studio/faker-methods` | Curated faker methods + locales |
 
 `POST /generate` requires `confirm: "<collection>"` whenever `wipeFirst` is set — the guard lives in the engine, so every caller inherits it.
+
+`generate`, `preview`, `project/plan` and `project/run` all reject a collection that is not a legal seed target with `400` and the reason, so the refusal does not depend on the UI honouring it.
+
+## Collection names and icons
+
+Every collection the module renders is named and iconed the way Directus itself
+would. The app's collections store already resolves both — it merges
+`meta.translations` into i18n per locale, prefers a `collection_names.<key>`
+translation where one exists, and falls back to `formatTitle` on the key — so
+`useCollectionName()` reads that through `useStores()` rather than title-casing
+the key locally. Renaming a collection in Directus, or translating it, is
+reflected here for free, and each card carries the collection's real icon
+instead of a generic one.
+
+Two deliberate exceptions:
+
+- **The key is still shown**, in monospace beside or beneath the name. A run
+  writes to `ss_authors`, not to "Ss Authors", and the panel has to be precise
+  about which table it means.
+- **The wipe confirmation asks for the key**, because that is the string you
+  type to confirm.
+
+For system tables the store has no `collection_names.*` entry, so its name is
+just `formatTitle('directus_files')` — "Directus Files". The prefix is dropped,
+since the list already tags those rows as system and prints the key underneath.
+The endpoint keeps its own `resolveDisplayName` for the server side, where no
+store exists, and it remains the fallback in the app.
 
 ## Architecture
 
@@ -264,7 +319,7 @@ Seed Studio is **admin-only by design** — the module hides itself for non-admi
 
 ## Compatibility
 
-- Directus `^11.0.0`
+- Directus `^11.0.0 || ^12.0.0`
 - Node.js `>= 20`
 - Postgres, MySQL/MariaDB, or SQLite
 

@@ -56,6 +56,46 @@ describe('buildConstraints — validation is a filter AST, not { min, max }', ()
     assert.equal(constraints.min, undefined);
   });
 
+  it('does not read an integer column\'s bit width as decimal digits', () => {
+    // Postgres reports numeric_precision 32 for int4 — bits, not digits. Read
+    // as digits it yields a 10^32 ceiling, and the insert dies with
+    // `invalid input syntax for type integer: "8.69e+31"`.
+    const constraints = buildConstraints(
+      rawField('view_count', 'integer', { schema: { numeric_precision: 32, numeric_scale: 0 } })
+    );
+    assert.equal(constraints.max, undefined, 'must not invent a ceiling for a bare integer');
+    assert.equal(constraints.min, undefined, 'must not invent a floor for a bare integer');
+  });
+
+  it('leaves bigInteger bit width alone too', () => {
+    const constraints = buildConstraints(
+      rawField('big', 'bigInteger', { schema: { numeric_precision: 64, numeric_scale: 0 } })
+    );
+    assert.equal(constraints.max, undefined);
+  });
+
+  it('clamps a user-set integer bound to what the column can hold', () => {
+    // An explicit rule wider than int4 is narrowed rather than dropped.
+    const constraints = buildConstraints(
+      rawField('view_count', 'integer', {
+        schema: { numeric_precision: 32, numeric_scale: 0 },
+        meta: { validation: { view_count: { _lte: 10_000_000_000 } } },
+      })
+    );
+    assert.equal(constraints.max, 2_147_483_647);
+  });
+
+  it('keeps a user-set integer bound that already fits', () => {
+    const constraints = buildConstraints(
+      rawField('rating', 'integer', {
+        schema: { numeric_precision: 32, numeric_scale: 0 },
+        meta: { validation: { rating: { _gte: 1, _lte: 5 } } },
+      })
+    );
+    assert.equal(constraints.min, 1);
+    assert.equal(constraints.max, 5);
+  });
+
   it('derives the ceiling of a decimal column from precision and scale', () => {
     const constraints = buildConstraints(
       rawField('total', 'decimal', { schema: { numeric_precision: 5, numeric_scale: 2 } })

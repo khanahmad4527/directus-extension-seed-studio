@@ -27,11 +27,11 @@
             class="recent-item"
             :class="`status-${r.status}`"
             @click="resumeRun(r)"
-            :title="`${r.collection} · ${r.row_count_written}/${r.row_count_requested} rows`"
+            :title="`${nameOf(r.collection)} (${r.collection}) · ${r.row_count_written}/${r.row_count_requested} rows`"
           >
             <span class="recent-status" :class="`status-${r.status}`" />
             <span class="recent-meta">
-              <code>{{ r.collection }}</code>
+              <span class="recent-name">{{ nameOf(r.collection) }}</span>
               <span class="recent-counts">{{ r.row_count_written }}/{{ r.row_count_requested }}</span>
             </span>
             <v-icon
@@ -129,6 +129,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
+import { useCollectionName } from './composables/useCollectionName';
 import ScreenCollections from './screens/ScreenCollections.vue';
 import ScreenFields from './screens/ScreenFields.vue';
 import ScreenSettings from './screens/ScreenSettings.vue';
@@ -152,6 +153,8 @@ interface RunSummary {
 }
 
 const ACTIVE_KEY = 'seed-studio.activeRun';
+
+const { nameOf } = useCollectionName();
 
 const steps = [
   { n: 1, label: 'Pick collection', hint: 'Where to write' },
@@ -476,9 +479,9 @@ onBeforeUnmount(() => {
   gap: 1px;
   min-width: 0;
 }
-.recent-meta code {
-  font-family: var(--theme--fonts--monospace--font-family);
+.recent-meta .recent-name {
   font-size: 12px;
+  font-weight: 600;
   color: var(--theme--foreground);
   overflow: hidden;
   text-overflow: ellipsis;

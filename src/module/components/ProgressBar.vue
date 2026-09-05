@@ -1,6 +1,6 @@
 <template>
   <div class="progress-bar">
-    <v-progress-linear :model-value="percent" rounded />
+    <v-progress-linear :value="percent" rounded />
     <span class="percent">{{ percent }}%</span>
   </div>
 </template>

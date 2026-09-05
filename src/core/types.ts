@@ -249,7 +249,12 @@ export interface AuditRunRow {
   started_at: string;
   completed_at: string | null;
   seed?: number | null;
-  options?: RunOptions | null;
+  /**
+   * The run options, plus `projectRunId` when this row is one collection of a
+   * whole-project run. `options` is a json column, so the extra key needs no
+   * schema change and lets the history group a project's collections together.
+   */
+  options?: (RunOptions & { projectRunId?: string }) | null;
   created_ids?: PrimaryKey[] | null;
   undoable?: boolean;
 }

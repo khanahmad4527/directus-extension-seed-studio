@@ -31,6 +31,10 @@ services:
         condition: service_started
     environment:
       SECRET: "replace-with-random-secret"
+      # Directus warns when this is unset, and Seed Studio's production check
+      # falls back to NODE_ENV — which this image sets to "production" — so the
+      # local stack would warn that it looks like a live instance.
+      PUBLIC_URL: "http://localhost:8055"
       ADMIN_EMAIL: "admin@example.com"
       ADMIN_PASSWORD: "d1r3ctu5"
       DB_CLIENT: "pg"
@@ -45,9 +49,13 @@ services:
       EXTENSIONS_AUTO_RELOAD: "true"
       WEBSOCKETS_ENABLED: "true"
     healthcheck:
+      # /server/health requires authentication (the public role has no access to
+      # it), so an unauthenticated probe there returns 403 forever and the
+      # container never reports healthy. /server/ping is public and answers
+      # "pong" once the HTTP server is actually accepting requests.
       test:
         - "CMD-SHELL"
-        - "wget -qO- http://127.0.0.1:8055/server/health | grep -q '\"status\":\"ok\"' || exit 1"
+        - "wget -qO- http://127.0.0.1:8055/server/ping | grep -q pong || exit 1"
       interval: 5s
       timeout: 5s
       retries: 30

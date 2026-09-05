@@ -1,10 +1,14 @@
 import type { ResponseLike, Router } from '../express-types.js';
 import { buildCollectionDescriptor } from '../../core/schema-model.js';
+import { isSeedStudioCollection } from '../../core/seed-targets.js';
 import { buildEngine, type RouteDeps } from '../engine-context.js';
 
 export function registerSchemaRoute(router: Router, deps: RouteDeps): void {
   router.get('/schema/:collection', async (req: any, res: ResponseLike) => {
     try {
+      if (isSeedStudioCollection(req.params.collection)) {
+        return res.status(404).json({ error: 'Collection not found' });
+      }
       const engine = await buildEngine(req, deps);
       const descriptor = await buildCollectionDescriptor(engine.ds, req.params.collection, {
         detect: {

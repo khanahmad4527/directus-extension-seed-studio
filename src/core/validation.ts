@@ -15,6 +15,59 @@ export function extractIsUnique(field: any): boolean {
 }
 
 /**
+ * Widest value each integer type can hold. Postgres reports `numeric_precision`
+ * for these columns as a bit count (16/32/64), not a digit count, so the
+ * decimal(p, s) formula below must never be applied to them — reading 32 as
+ * "32 digits" yields a 10^32 ceiling and the database rejects the insert with
+ * `invalid input syntax for type integer`.
+ */
+const INTEGER_LIMITS: Record<string, { min: number; max: number }> = {
+  integer: { min: -2_147_483_648, max: 2_147_483_647 },
+  // int8 exceeds Number.MAX_SAFE_INTEGER; stop there so generated values stay
+  // exactly representable in JS and survive JSON round-tripping.
+  bigInteger: { min: -Number.MAX_SAFE_INTEGER, max: Number.MAX_SAFE_INTEGER },
+};
+
+/** Types where `numeric_precision` really does mean decimal digits. */
+const DECIMAL_TYPES = new Set(['decimal', 'float', 'double', 'number']);
+
+/**
+ * Narrow `constraints` to what the underlying column can physically store.
+ *
+ * Integer columns only ever tighten a bound the user already asked for. They
+ * must not introduce one: the detector picks a deliberately human-scale default
+ * range (1–10000) for a bare integer, and injecting int4's ±2.1 billion here
+ * would override that and make every counter field absurd. Decimal columns are
+ * the opposite case — `decimal(5,2)` genuinely cannot hold 1000, so the bound
+ * is real information and worth introducing.
+ */
+function applyColumnRange(raw: RawField, constraints: FieldConstraints): void {
+  const type = (raw as any)?.type as string | undefined;
+  if (!type) return;
+
+  const intLimit = INTEGER_LIMITS[type];
+  if (intLimit) {
+    if (constraints.max !== undefined) constraints.max = Math.min(constraints.max, intLimit.max);
+    if (constraints.min !== undefined) constraints.min = Math.max(constraints.min, intLimit.min);
+    return;
+  }
+
+  // decimal(precision, scale) — the largest value that fits is 10^(p-s) - 10^-s.
+  const precision = raw?.schema?.numeric_precision;
+  const scale = raw?.schema?.numeric_scale;
+  if (
+    DECIMAL_TYPES.has(type) &&
+    typeof precision === 'number' &&
+    typeof scale === 'number' &&
+    precision > 0
+  ) {
+    const limit = Math.pow(10, precision - scale) - Math.pow(10, -scale);
+    constraints.max = Math.min(constraints.max ?? Infinity, limit);
+    if ((constraints.min ?? -Infinity) < -limit) constraints.min = -limit;
+  }
+}
+
+/**
  * Everything we know about the legal values of a field, merged from three
  * sources that Directus keeps apart: the validation filter AST, the interface
  * options, and the database column definition.
@@ -34,14 +87,7 @@ export function buildConstraints(raw: RawField): FieldConstraints {
   if (typeof optMin === 'number') constraints.min = Math.max(constraints.min ?? -Infinity, optMin);
   if (typeof optMax === 'number') constraints.max = Math.min(constraints.max ?? Infinity, optMax);
 
-  // decimal(precision, scale) — the largest value that fits is 10^(p-s) - 10^-s.
-  const precision = raw?.schema?.numeric_precision;
-  const scale = raw?.schema?.numeric_scale;
-  if (typeof precision === 'number' && typeof scale === 'number' && precision > 0) {
-    const limit = Math.pow(10, precision - scale) - Math.pow(10, -scale);
-    constraints.max = Math.min(constraints.max ?? Infinity, limit);
-    if ((constraints.min ?? -Infinity) < -limit) constraints.min = -limit;
-  }
+  applyColumnRange(raw, constraints);
 
   if (constraints.min !== undefined && !Number.isFinite(constraints.min)) delete constraints.min;
   if (constraints.max !== undefined && !Number.isFinite(constraints.max)) delete constraints.max;
@@ -181,6 +227,13 @@ export function postProcessValue(
     const scale = descriptor.numericScale;
     if (typeof scale === 'number' && scale >= 0) {
       v = Number((v as number).toFixed(scale));
+    }
+    // Last line of defence: an explicit strategy from a preset or a hand-written
+    // request can name bounds the column cannot hold, and the database rejects
+    // the whole batch rather than the one row. Clamp to what int4/int8 accepts.
+    const intLimit = INTEGER_LIMITS[descriptor.type];
+    if (intLimit) {
+      v = Math.round(clampNumber(v as number, intLimit.min, intLimit.max));
     }
   }
 

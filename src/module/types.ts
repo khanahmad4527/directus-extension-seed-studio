@@ -34,6 +34,8 @@ export type {
 export type { FieldProfile, ProfileResult } from '../core/inference.js';
 export type { InvariantChange } from '../core/invariants.js';
 export type { ProjectPlan } from '../core/project.js';
+export type { Prerequisite, PreflightResult } from '../core/preflight.js';
+export type { BlockCategory, SeedTargetVerdict } from '../core/seed-targets.js';
 
 export interface CollectionSummary {
   collection: string;
@@ -42,6 +44,12 @@ export interface CollectionSummary {
   rowCount: number;
   isSystem: boolean;
   singleton?: boolean;
+  /** False for system tables Seed Studio refuses to write to. */
+  seedable: boolean;
+  blockedReason?: string | null;
+  blockedCategory?: import('../core/seed-targets.js').BlockCategory | null;
+  /** A caveat worth reading before seeding an otherwise-allowed collection. */
+  warning?: string | null;
 }
 
 /** Which engine the UI is currently driving. */

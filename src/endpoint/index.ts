@@ -7,6 +7,7 @@ import { registerFakerMethodsRoute } from './routes/faker-methods.js';
 import { registerGenerateRoutes } from './routes/generate.js';
 import { registerInsightsRoute } from './routes/insights.js';
 import { registerPresetRoutes } from './routes/presets.js';
+import { registerPreflightRoute } from './routes/preflight.js';
 import { registerPreviewRoute } from './routes/preview.js';
 import { registerProfileRoute } from './routes/profile.js';
 import { registerProjectRoutes } from './routes/project.js';
@@ -36,6 +37,7 @@ export default defineEndpoint({
     registerInsightsRoute(router, deps);
     registerProfileRoute(router, deps);
     registerPreviewRoute(router, deps);
+    registerPreflightRoute(router, deps);
 
     let auditEnsured = false;
     let auditInFlight: Promise<void> | null = null;

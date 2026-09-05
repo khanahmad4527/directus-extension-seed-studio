@@ -1,5 +1,6 @@
 import type { ResponseLike, Router } from '../express-types.js';
 import { collectionInsights, insightWarnings } from '../../core/insights.js';
+import { isSeedStudioCollection } from '../../core/seed-targets.js';
 import { buildEngine, type RouteDeps } from '../engine-context.js';
 
 /**
@@ -10,6 +11,9 @@ import { buildEngine, type RouteDeps } from '../engine-context.js';
 export function registerInsightsRoute(router: Router, deps: RouteDeps): void {
   router.get('/insights/:collection', async (req: any, res: ResponseLike) => {
     try {
+      if (isSeedStudioCollection(req.params.collection)) {
+        return res.status(404).json({ error: 'Collection not found' });
+      }
       const engine = await buildEngine(req, deps);
       const plannedRows = Math.max(0, parseInt(String(req.query.count ?? '0'), 10) || 0);
       const insights = await collectionInsights(engine.ds, req.params.collection);

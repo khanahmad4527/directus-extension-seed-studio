@@ -8,7 +8,8 @@
         <span v-else>Generating</span>
       </h1>
       <p class="screen-subtitle">
-        <code>{{ collection }}</code>
+        {{ nameOf(collection) }}
+        <code class="subtitle-key">{{ collection }}</code>
       </p>
     </header>
 
@@ -82,10 +83,19 @@
         </span>
       </header>
 
+      <!--
+        Directus's v-progress-linear takes `value`, not `model-value`, and has
+        no `color` prop. Binding those meant the fill sat at 0% for every run
+        while the percentage beside it counted up — and because the component
+        derives its own danger/warning/success class from `value`, a stuck 0
+        also rendered the bar red the whole way through. The fill colour is set
+        from the run state in CSS below instead.
+      -->
       <v-progress-linear
-        :model-value="percent"
+        class="progress-track"
+        :class="{ 'is-error': Boolean(errorMessage), 'is-done': done && !errorMessage }"
+        :value="percent"
         rounded
-        :color="errorMessage ? 'var(--theme--danger)' : (done ? 'var(--theme--success)' : 'var(--theme--primary)')"
       />
 
       <div class="stat-grid">
@@ -173,6 +183,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { useCollectionName } from '../composables/useCollectionName';
 import { useSeedApi } from '../composables/useSeedApi';
 import { useSseProgress } from '../composables/useSseProgress';
 
@@ -195,6 +206,7 @@ const props = withDefaults(defineProps<Props>(), {
 });
 defineEmits<{ (e: 'restart'): void; (e: 'back'): void }>();
 
+const { nameOf } = useCollectionName();
 const api = useSeedApi();
 const progress = useSseProgress();
 
@@ -374,6 +386,13 @@ function formatMs(ms: number): string {
   font-size: 15px;
   color: var(--theme--foreground-subdued);
 }
+
+.subtitle-key {
+  font-family: var(--theme--fonts--monospace--font-family);
+  font-size: 12px;
+  color: var(--theme--foreground-subdued);
+  margin-inline-start: 6px;
+}
 .screen-subtitle code {
   font-family: var(--theme--fonts--monospace--font-family);
 }
@@ -431,6 +450,23 @@ function formatMs(ms: number): string {
 }
 .progress-percent.is-done { color: var(--theme--success); }
 .progress-percent.is-error { color: var(--theme--danger); }
+
+.progress-track :deep(.inner) {
+  background-color: var(--theme--primary);
+  transition: inline-size 200ms ease;
+}
+.progress-track.is-done :deep(.inner) {
+  background-color: var(--theme--success);
+}
+.progress-track.is-error :deep(.inner) {
+  background-color: var(--theme--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-track :deep(.inner) {
+    transition: none;
+  }
+}
 
 .stat-grid {
   display: grid;

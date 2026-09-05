@@ -1,7 +1,7 @@
 <template>
   <section class="screen">
     <header class="screen-header">
-      <h1 class="screen-title">{{ schema.displayName }}</h1>
+      <h1 class="screen-title">{{ nameOf(schema.collection, schema.displayName) }}</h1>
       <p class="screen-subtitle">
         <code>{{ schema.collection }}</code>
         <span class="dot">·</span>
@@ -248,6 +248,7 @@ defineOptions({ name: 'ScreenFields' });
 import { computed, onMounted, ref } from 'vue';
 import StrategyBadge from '../components/StrategyBadge.vue';
 import StrategyEditor from '../components/StrategyEditor.vue';
+import { useCollectionName } from '../composables/useCollectionName';
 import { useSeedApi } from '../composables/useSeedApi';
 import type {
   CollectionDescriptor,
@@ -270,6 +271,7 @@ const emit = defineEmits<{
   (e: 'next'): void;
 }>();
 
+const { nameOf } = useCollectionName();
 const api = useSeedApi();
 const fakerMethods = ref<FakerMethodEntry[]>([]);
 const editing = ref<FieldDescriptor | null>(null);

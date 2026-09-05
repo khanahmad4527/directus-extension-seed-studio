@@ -1,4 +1,5 @@
 import type { SeedDataSource } from './data-source.js';
+import { formatForColumnType } from './date-format.js';
 import { createRowEntity, readTrait, skewedPastDate, type RowEntity } from './entity.js';
 import { invokeFaker } from './faker-methods.js';
 import type { Rng } from './rng.js';
@@ -462,13 +463,7 @@ function normaliseGeometryType(input: string): string {
 }
 
 export function formatDateForType(date: Date, descriptor: FieldDescriptor): string {
-  const type = descriptor.type;
-  const iface = descriptor.interface;
-  if (type === 'date' || iface === 'date') return date.toISOString().slice(0, 10);
-  if (type === 'time' || iface === 'time') return date.toISOString().slice(11, 19);
-  // Directus stores `dateTime` without a zone; sending a Z-suffixed value shifts it.
-  if (type === 'dateTime') return date.toISOString().slice(0, 19);
-  return date.toISOString();
+  return formatForColumnType(date, descriptor.type, descriptor.interface);
 }
 
 /** Tags/CSV columns take a comma string; JSON columns take an array. */

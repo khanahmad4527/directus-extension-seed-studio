@@ -125,6 +125,22 @@ describe('detectStrategy — validation rules outrank name heuristics', () => {
     assert.equal((strategy as any).min, 5);
     assert.equal((strategy as any).max, 9);
   });
+  it('an unnamed integer gets a human-scale range, not the full int4 span', () => {
+    // The column's physical range must not reach the detector as a constraint,
+    // or every bare integer would span 2.1 billion.
+    const strategy = detectStrategy(ctx({ fieldName: 'tally', type: 'integer' }));
+    assert.equal(strategy.kind, 'random_int');
+    assert.equal((strategy as any).min, 1);
+    assert.equal((strategy as any).max, 10000);
+  });
+  it('a counter-shaped integer stays in counter range', () => {
+    // Regression guard for the field that actually broke: view_count on int4
+    // was detected as random_int(-1e32, 1e32) and Postgres rejected the batch.
+    const strategy = detectStrategy(ctx({ fieldName: 'view_count', type: 'integer' }));
+    assert.equal(strategy.kind, 'random_int');
+    assert.equal((strategy as any).min, 0);
+    assert.equal((strategy as any).max, 1000);
+  });
 });
 
 describe('detectStrategy — dropdown choices', () => {
