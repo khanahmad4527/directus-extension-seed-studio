@@ -374,6 +374,34 @@ The engine is driven through `SeedDataSource`, so tests use an in-memory impleme
 - `directus_files` rows generated here describe files that do not exist in storage — thumbnails and downloads will 404. Seed Studio warns before you do it.
 - Generated `directus_users` can sign in with the placeholder password and count toward user limits.
 
+## Releasing
+
+Publishing is manual and deliberately so — no npm token is kept in the
+repository's secrets.
+
+```bash
+# 1. bump the version in package.json, then commit on main
+# 2. write the release notes into the annotated tag
+git tag -a v1.2.0 -m "Seed Studio v1.2.0
+
+WHAT CHANGED
+- ..."
+
+git push origin main
+git push origin v1.2.0   # tests, builds, and creates the GitHub Release
+
+# 3. publish, once the tag's workflow is green
+pnpm build
+npm publish --access public
+```
+
+Release notes live in the annotated tag: the workflow passes
+`--notes-from-tag` to `gh release create`, so whatever is in the tag message
+becomes the Release body. There is no `CHANGELOG.md`.
+
+A tag push runs the unit suite in two timezones and builds the bundle before
+creating the Release, so a broken tag fails before it is announced.
+
 ## Roadmap
 
 **Next**
